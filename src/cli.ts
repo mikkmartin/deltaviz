@@ -1,0 +1,203 @@
+#!/usr/bin/env node
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import http from 'node:http'
+import path from 'node:path'
+import { changes } from './changes.js'
+import type { Mode } from './diff.js'
+import { readGraph, readSource } from './map/read.js'
+import { watch } from './watch.js'
+
+/**
+ * `deltaviz [dir]`: serves the Tree of the git repo around `dir` on 127.0.0.1
+ * (4848, or the next free port), opens it in the browser and pushes a change
+ * event whenever the worktree or its git state changes. A second run in the
+ * same repo just opens the running one.
+ */
+
+const HELP = `Usage: deltaviz [dir] [options]
+
+Shows the git repo around dir (default: .) as a live treemap in the browser.
+
+Options:
+  --port <n>     First port to try (default 4848; the next free one is used)
+  --base <ref>   Branch to compare against (default: origin's default branch)
+  --no-open      Don't open the browser
+  -h, --help     Show this help
+  -v, --version  Show the version
+`
+
+const DIST = path.dirname(new URL(import.meta.url).pathname)
+const VERSION: string = JSON.parse(fs.readFileSync(path.join(DIST, '../package.json'), 'utf8')).version
+const PORT_TRIES = 20
+
+// Our own git reads mustn't write the index (a refresh would wake the watcher).
+process.env.GIT_OPTIONAL_LOCKS = '0'
+
+function args(argv: string[]) {
+  const out = { dir: '.', port: 4848, base: undefined as string | undefined, open: true }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '-h' || a === '--help') (process.stdout.write(HELP), process.exit(0))
+    else if (a === '-v' || a === '--version') (console.log(VERSION), process.exit(0))
+    else if (a === '--no-open') out.open = false
+    else if (a === '--port') out.port = Number(argv[++i])
+    else if (a === '--base') out.base = argv[++i]
+    else if (a.startsWith('-')) die(`unknown option ${a}\n\n${HELP}`)
+    else out.dir = a
+  }
+  if (!Number.isInteger(out.port) || out.port < 1 || out.port > 65535) die('--port needs a number between 1 and 65535')
+  return out
+}
+
+function die(message: string): never {
+  process.stderr.write(`deltaviz: ${message}\n`)
+  process.exit(1)
+}
+
+const git = (cwd: string, a: string[]) =>
+  new Promise<string>((resolve, reject) => execFile('git', a, { cwd }, (err, stdout, stderr) => (err ? reject(new Error(stderr.trim() || err.message)) : resolve(stdout.trim()))))
+
+function open(url: string) {
+  const [cmd, a] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]]
+  execFile(cmd, a, (err) => err && console.log(`Open ${url} in your browser`))
+}
+
+/** Whoever holds `port`, if it's a deltaviz: the repo it shows */
+async function probe(port: number): Promise<string | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) })
+    const body = (await r.json()) as { app?: string; root?: string }
+    return body.app === 'deltaviz' ? (body.root ?? null) : null
+  } catch {
+    return null
+  }
+}
+
+const opts = args(process.argv.slice(2))
+const cwd = path.resolve(opts.dir)
+if (!fs.existsSync(cwd)) die(`no such folder: ${cwd}`)
+const root = await git(cwd, ['rev-parse', '--show-toplevel']).catch(() => die(`not inside a git repository: ${cwd}`))
+/** Where it was run, relative to the repo: the folder the Tree opens zoomed into */
+const start = (await git(cwd, ['rev-parse', '--show-prefix'])).replace(/\/$/, '')
+const name = path.basename(root)
+
+/** Each mode's last read, as sent; dropped when something changes */
+type Reads = { graph: Promise<string>; diff: Promise<string> }
+const cache = new Map<Mode, Reads>()
+const read = (mode: Mode): Reads => {
+  let r = cache.get(mode)
+  if (!r) {
+    r = {
+      graph: readGraph(root, opts.base, mode).then((g) => JSON.stringify(g)),
+      diff: changes(root, mode, opts.base).then((s) => JSON.stringify(s)),
+    }
+    cache.set(mode, r)
+    // A failed read isn't kept: the next request tries again.
+    Promise.all([r.graph, r.diff]).catch(() => cache.get(mode) === r && cache.delete(mode))
+  }
+  return r
+}
+
+const clients = new Set<http.ServerResponse>()
+const settled = (p: Promise<string>) => p.catch((e: Error) => `!${e.message}`)
+
+/** Re-reads what the pages show; tells them only if any of it changed. */
+async function changed() {
+  const before = new Map([...cache].map(([m, r]) => [m, Promise.all([settled(r.graph), settled(r.diff)])]))
+  cache.clear()
+  let differs = before.size === 0
+  for (const [mode, old] of before) {
+    const r = read(mode)
+    const [a, b] = await old
+    if (a !== (await settled(r.graph)) || b !== (await settled(r.diff))) differs = true
+  }
+  if (differs) for (const c of clients) c.write('data: change\n\n')
+}
+
+const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>${name.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)} · deltaviz</title>
+</head>
+<body>
+<div id="root"></div>
+<script>window.DELTAVIZ = ${JSON.stringify({ name, root, start }).replace(/</g, '\\u003c')}</script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>`
+
+function send(res: http.ServerResponse, status: number, type: string, body: string | Buffer) {
+  res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+const json = (res: http.ServerResponse, p: Promise<string>) =>
+  p.then(
+    (body) => send(res, 200, 'application/json', body),
+    (e: Error & { status?: number }) => send(res, e.status ?? 500, 'application/json', JSON.stringify({ error: e.message })),
+  )
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url ?? '/', 'http://x')
+  const mode: Mode = url.searchParams.get('mode') === 'uncommitted' ? 'uncommitted' : 'branch'
+  switch (url.pathname) {
+    case '/':
+      return send(res, 200, 'text/html; charset=utf-8', html)
+    case '/app.js':
+      return send(res, 200, 'text/javascript', fs.readFileSync(path.join(DIST, 'app.js')))
+    case '/health':
+      return send(res, 200, 'application/json', JSON.stringify({ app: 'deltaviz', version: VERSION, root }))
+    case '/graph':
+      return json(res, read(mode).graph)
+    case '/diff':
+      return json(res, read(mode).diff)
+    case '/file':
+      return json(res, readSource(root, url.searchParams.get('path') ?? '').then((f) => JSON.stringify(f)))
+    case '/events':
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
+      res.write(': hi\n\n')
+      clients.add(res)
+      req.on('close', () => clients.delete(res))
+      return
+    default:
+      send(res, 404, 'text/plain', 'not found')
+  }
+})
+
+/** Listens on the first free port from `opts.port`; a deltaviz of this repo already there just opens. */
+async function listen(): Promise<number> {
+  for (let port = opts.port; port < opts.port + PORT_TRIES; port++) {
+    const ok = await new Promise<boolean>((resolve, reject) => {
+      const onError = (e: NodeJS.ErrnoException) => (e.code === 'EADDRINUSE' ? resolve(false) : reject(e))
+      server.once('error', onError)
+      server.listen(port, '127.0.0.1', () => (server.off('error', onError), resolve(true)))
+    })
+    if (ok) return port
+    if ((await probe(port)) === root) {
+      const url = `http://127.0.0.1:${port}/`
+      console.log(`deltaviz is already showing ${root} at ${url}`)
+      if (opts.open) open(url)
+      process.exit(0)
+    }
+  }
+  die(`no free port in ${opts.port}–${opts.port + PORT_TRIES - 1}`)
+}
+
+const port = await listen()
+const url = `http://127.0.0.1:${port}/`
+await watch(root, changed)
+console.log(`deltaviz: ${root} at ${url} (Ctrl-C to stop)`)
+if (opts.open) open(url)
+// Read the default view while the browser opens.
+read('branch')
+
+const stop = () => {
+  for (const c of clients) c.end()
+  process.exit(0)
+}
+process.on('SIGINT', stop)
+process.on('SIGTERM', stop)
