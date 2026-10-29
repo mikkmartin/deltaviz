@@ -4,6 +4,11 @@
   "description": "A live treemap of a git repo's codebase, with the branch's changes highlighted",
   "license": "MIT",
   "author": "Mikk Martin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikkmartin/deltaviz.git"
+  },
+  "homepage": "https://github.com/mikkmartin/deltaviz#readme",
   "type": "module",
   "bin": {
     "deltaviz": "dist/cli.js"
