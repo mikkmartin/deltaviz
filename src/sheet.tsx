@@ -18,17 +18,17 @@ const READY_WAIT_MS = 150
 export const SHEET_CSS = `
 .sheet-overlay { position: fixed; inset: 0; z-index: 10; background: ${alpha(black, 0.55)}; transition: opacity ${OVERLAY_MS}ms; }
 .sheet { position: fixed; z-index: 11; top: 0; bottom: 0; right: 0; width: 75%; max-width: 1100px; display: flex; flex-direction: column;
-  background: ${gray[950]}; border-left: 1px solid ${gray[800]}; box-shadow: 0 10px 15px -3px ${alpha(black, 0.4)}, 0 4px 6px -4px ${alpha(black, 0.4)};
+  background: ${gray[950]}; border-left: 1px solid ${gray[800]}; box-shadow: -24px 0 64px -12px ${alpha(black, 0.8)}, -4px 0 16px ${alpha(black, 0.5)};
   transition: opacity ${MS}ms ease-in-out, transform ${MS}ms ease-in-out; outline: none; }
 .sheet-overlay.out, .sheet.out { opacity: 0; }
 .sheet.out { transform: translateX(${SLIDE}px); }
 /* One row, everything centred on it: the badge, the name over its description, the counts, ✕ */
-.sheet-head { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 0 12px 0 20px; box-sizing: border-box; }
+.sheet-head { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 0 12px 0 20px; box-sizing: border-box; position: relative; z-index: 1; box-shadow: 0 6px 16px -4px ${alpha(black, 0.6)}, 0 1px 0 ${alpha(black, 0.4)}; }
 .sheet-names { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0; padding: 12px 0; }
 .sheet-title { font-size: 14px; line-height: 18px; color: ${white}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sheet-desc { font-size: 12px; line-height: 16px; color: ${gray[400]}; }
 /* Toned (a changed file, in its change's colour, --tone): as an editor's status bar, a solid block with the badge, then the bar tinted, its text in the colour */
-.sheet-head.toned { padding-left: 0; gap: 16px; background: color-mix(in srgb, var(--tone) 10%, transparent); }
+.sheet-head.toned { padding-left: 0; gap: 16px; background: color-mix(in srgb, ${gray[950]}, var(--tone) 10%); }
 .sheet-head.toned .sheet-title, .sheet-head.toned .sheet-desc { color: var(--tone); }
 .sheet-head.toned .sheet-desc { opacity: 0.75; }
 .sheet-badge { flex: none; align-self: stretch; width: 48px; display: flex; align-items: center; justify-content: center; background: var(--tone); color: ${gray[950]}; }

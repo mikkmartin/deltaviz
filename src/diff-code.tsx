@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react'
 import type { DiffFile, DiffLine, Hunk } from './diff.js'
 import { HIGHLIGHT_CSS, highlightHunk, highlightText, languageOf } from './highlight.js'
 import { alpha, gray, green, MONO, red, white } from './palette.js'
@@ -8,6 +8,8 @@ export const DELTA_CSS = `.wtc-add { color: ${green[500]}; } .wtc-del { color: $
 
 /** The line numbers' column: room for 5 digits and the gap after them */
 const GUTTER = 64
+/** A toned file's gutter tint: as wide as the sheet header's badge block, so the two line up */
+const BADGE_W = 48
 
 /** A text diff's look, shared by the Files tab and the Map/Tree's diff modal */
 export const DIFF_CSS = `
@@ -31,6 +33,13 @@ ${DELTA_CSS}
 /* A changed line's number in its colour (a removed one shows where it was) */
 .cl.plus .cl-n, .cl.plus:hover .cl-n { color: ${green[400]}; }
 .cl.minus .cl-n, .cl.minus:hover .cl-n { color: ${red[400]}; }
+/* A file all new or all gone (--tone): its line numbers in the colour, as its header is, over a tint of it from the header down, as wide as the header's badge (through the code's top and bottom padding, drawn as gutter-wide bands) */
+.wtc-code.toned { --tone-bg: color-mix(in srgb, ${gray[950]}, var(--tone) 10%); padding-top: 0; padding-bottom: 0; }
+.wtc-code.toned .cl-n { padding-right: ${GUTTER - BADGE_W + 8}px; color: color-mix(in srgb, var(--tone) 75%, ${gray[500]}); background: linear-gradient(90deg, var(--tone-bg) ${BADGE_W}px, ${gray[950]} ${BADGE_W}px); }
+.wtc-code.toned .cl:hover .cl-n { color: var(--tone); }
+.wtc-code.toned::before, .wtc-code.toned::after { content: ''; display: block; position: sticky; left: 0; width: ${BADGE_W}px; background: var(--tone-bg); }
+.wtc-code.toned::before { height: 8px; }
+.wtc-code.toned::after { height: 24px; }
 .cl.note, .cl.hunk { color: ${gray[500]}; }
 .cl.hunk { margin: 8px 0 4px; }
 .cl.hunk .cl-n { color: ${gray[600]}; }
@@ -136,7 +145,7 @@ export function wholeFile(file: DiffFile, text: string): DiffFile | null {
 }
 
 /** A whole file, numbered and syntax-highlighted when its language is known */
-export function FileCode({ path, text }: { path: string; text: string }) {
+export function FileCode({ path, text, tone }: { path: string; text: string; /** All of it new or gone: its gutter in this colour */ tone?: string }) {
   const { lines, html } = useMemo(() => {
     const lines = text.replace(/\n$/, '').split('\n')
     const language = languageOf(path)
@@ -144,7 +153,7 @@ export function FileCode({ path, text }: { path: string; text: string }) {
     return { lines, html: html?.length === lines.length ? html : null }
   }, [path, text])
   return (
-    <div className="wtc-code">
+    <div className={`wtc-code${tone ? ' toned' : ''}`} style={tone ? ({ '--tone': tone } as CSSProperties) : undefined}>
       {lines.map((l, i) => (
         <div key={i} className="cl">
           <span className="cl-n">{i + 1}</span>

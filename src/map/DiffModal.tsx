@@ -86,9 +86,9 @@ export function DiffModal({ state, path, read, onClose }: { state: State | undef
       ) : !state.ok ? (
         <div className="lm-empty">{state.error}</div>
       ) : added && shown?.text !== undefined ? (
-        <FileCode path={path} text={shown.text} />
+        <FileCode path={path} text={shown.text} tone={COLOR.added} />
       ) : deleted ? (
-        <FileCode path={path} text={gone} />
+        <FileCode path={path} text={gone} tone={COLOR.removed} />
       ) : file ? (
         whole ? <DiffCode key="whole" file={whole} whole /> : <DiffCode file={file} />
       ) : !shown ? (
