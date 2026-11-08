@@ -11,6 +11,7 @@
   "homepage": "https://github.com/mikkmartin/deltaviz#readme",
   "type": "module",
   "bin": {
+    "dv": "dist/cli.js",
     "deltaviz": "dist/cli.js"
   },
   "files": [

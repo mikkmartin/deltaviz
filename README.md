@@ -4,7 +4,7 @@ A live treemap of a git repo: the whole codebase sized by lines, the branch's ch
 
 ```sh
 npx deltaviz          # in any folder of a git repo
-npm i -g deltaviz     # or install it, then: deltaviz
+npm i -g deltaviz     # or install it, then: dv
 ```
 
 It opens `http://127.0.0.1:4848` (or the next free port) and keeps running until Ctrl-C. Run it again in the same repo and it opens the running one.
@@ -17,6 +17,8 @@ It opens `http://127.0.0.1:4848` (or the next free port) and keeps running until
 deltaviz [dir] [--port <n>] [--base <ref>] [--no-open]
 ```
 
+`dv` is an alias for `deltaviz`. Run `dv` inside any project to view that repo.
+
 Needs Node 24 and git.
 
 ## Develop
@@ -25,5 +27,8 @@ Needs Node 24 and git.
 npm install
 npm run dev           # serve this repo; rebuilds and reloads the page on save
 ```
+
+To use this checkout globally, run `npm run build && npm link`, then run `dv` from
+any project directory. Run `npm run build` again after changing the source.
 
 MIT
