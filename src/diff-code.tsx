@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { DiffFile, DiffLine, Hunk } from './diff.js'
 import { HIGHLIGHT_CSS, highlightHunk, highlightText, languageOf } from './highlight.js'
 import { alpha, gray, green, MONO, red, white } from './palette.js'
@@ -43,6 +43,7 @@ ${DELTA_CSS}
 .cl.note, .cl.hunk { color: ${gray[500]}; }
 .cl.hunk { margin: 8px 0 4px; }
 .cl.hunk .cl-n { color: ${gray[600]}; }
+.cl-chunk { display: flow-root; min-width: max-content; }
 ${HIGHLIGHT_CSS}`
 
 const LINE_CLASS = { '+': 'cl plus', '-': 'cl minus', ' ': 'cl', '\\': 'cl note' }
@@ -68,6 +69,77 @@ function lineNumbers(h: Hunk): [number | null, number | null][] {
   )
 }
 
+/** A line's height (.wtc-code's line-height) and a hunk header's extra (its margins) */
+const ROW_H = 20
+const HUNK_EXTRA = 12
+/** Rows per chunk: a chunk mounts as a whole when it nears the view */
+const CHUNK = 100
+/** How far past the view chunks mount, so a scroll finds them drawn */
+const AHEAD = '1500px'
+
+/** The nearest ancestor scrolling up and down, as the chunks' observer's root (.wtc-code's overflow-x makes its overflow-y auto too, but it's as tall as its lines) */
+function scroller(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) if (p.scrollHeight > p.clientHeight && /auto|scroll/.test(getComputedStyle(p).overflowY)) return p
+  return null
+}
+
+/**
+ * Rows drawn only near the view: in chunks of CHUNK, each away from it an empty block its height
+ * (estimated till drawn once, then as measured). A big file's thousands of lines open at once.
+ * `at`: a row whose chunk is drawn from the start (to scroll to).
+ */
+function Rows({ count, row, height, at = 0 }: { count: number; row(i: number): ReactNode; /** A row's height before it's drawn */ height(i: number): number; at?: number }) {
+  const chunks = Math.ceil(count / CHUNK)
+  const [shown, setShown] = useState(() => new Set([Math.floor(at / CHUNK)]))
+  const measured = useRef(new Map<number, number>())
+  const els = useRef<(HTMLDivElement | null)[]>([])
+  useEffect(() => {
+    const first = els.current.find(Boolean)
+    if (!first) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        setShown((prev) => {
+          let next = prev
+          for (const e of entries) {
+            const i = Number((e.target as HTMLElement).dataset.chunk)
+            if (e.isIntersecting === prev.has(i)) continue
+            if (next === prev) next = new Set(prev)
+            if (e.isIntersecting) next.add(i)
+            else {
+              // Leaving: keeps its drawn height, so nothing above the view moves.
+              measured.current.set(i, (e.target as HTMLElement).offsetHeight)
+              next.delete(i)
+            }
+          }
+          return next
+        })
+      },
+      { root: scroller(first), rootMargin: `${AHEAD} 0px` },
+    )
+    for (const el of els.current) if (el) io.observe(el)
+    return () => io.disconnect()
+  }, [chunks])
+  return (
+    <>
+      {Array.from({ length: chunks }, (_, c) => {
+        const from = c * CHUNK
+        const to = Math.min(count, from + CHUNK)
+        const on = shown.has(c)
+        let h = 0
+        if (!on) {
+          h = measured.current.get(c) ?? 0
+          if (!h) for (let i = from; i < to; i++) h += height(i)
+        }
+        return (
+          <div key={c} className="cl-chunk" data-chunk={c} ref={(el) => void (els.current[c] = el)} style={on ? undefined : { height: h }}>
+            {on && Array.from({ length: to - from }, (_, k) => row(from + k))}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 /** One file's hunks, line by line, numbered and syntax-highlighted when its language is known, as an editor shows a diff */
 export function DiffCode({ file, whole }: { file: DiffFile; whole?: boolean }) {
   const html = useMemo(() => {
@@ -75,6 +147,8 @@ export function DiffCode({ file, whole }: { file: DiffFile; whole?: boolean }) {
     return language ? file.hunks.map((h) => highlightHunk(h, language)) : []
   }, [file])
   const numbers = useMemo(() => file.hunks.map(lineNumbers), [file])
+  /** Every row: a hunk's header (li -1, hunks alone only), then its lines */
+  const rows = useMemo(() => file.hunks.flatMap((h, hi) => [...(whole ? [] : [[hi, -1] as const]), ...h.lines.map((_, li) => [hi, li] as const)]), [file, whole])
   // The whole file opens at its first change, in the middle of the view.
   const firstChange = whole ? file.hunks[0]!.lines.findIndex((l) => l.kind === '+' || l.kind === '-') : -1
   const first = useRef<HTMLDivElement>(null)
@@ -82,34 +156,37 @@ export function DiffCode({ file, whole }: { file: DiffFile; whole?: boolean }) {
   useLayoutEffect(() => {
     first.current?.scrollIntoView({ block: 'center' })
   }, [])
+  const row = (i: number) => {
+    const [hi, li] = rows[i]!
+    const h = file.hunks[hi]!
+    // Hunks alone: where each starts, quietly (the whole file needs none)
+    if (li < 0)
+      return (
+        <div key={i} className="cl hunk">
+          <span className="cl-n">⋯</span>
+          <span className="cl-t">{h.header.replace(/^@@[^@]*@@\s*/, '') || ' '}</span>
+        </div>
+      )
+    const l = h.lines[li]!
+    return (
+      <div key={i} className={LINE_CLASS[l.kind]} ref={hi === 0 && li === firstChange ? first : undefined}>
+        {/* The line's number now; a removed line, the one it had */}
+        <span className="cl-n">{l.kind === '-' ? numbers[hi]![li]![0] : numbers[hi]![li]![1]}</span>
+        {l.kind === '\\' ? (
+          <span className="cl-t">{`\\${l.text}`}</span>
+        ) : html[hi] ? (
+          <span className="cl-t" dangerouslySetInnerHTML={{ __html: html[hi]![li] || ' ' }} />
+        ) : (
+          <span className="cl-t">{l.text || ' '}</span>
+        )}
+      </div>
+    )
+  }
   return (
     <div className="wtc-code">
       {file.binary && <div className="cl note"><span className="cl-n" /><span className="cl-t">Binary file</span></div>}
       {!file.binary && !file.hunks.length && <div className="cl note"><span className="cl-n" /><span className="cl-t">No content changes</span></div>}
-      {file.hunks.map((h, hi) => (
-        <div key={hi}>
-          {/* Hunks alone: where each starts, quietly (the whole file needs none) */}
-          {!whole && (
-            <div className="cl hunk">
-              <span className="cl-n">⋯</span>
-              <span className="cl-t">{h.header.replace(/^@@[^@]*@@\s*/, '') || ' '}</span>
-            </div>
-          )}
-          {h.lines.map((l, li) => (
-            <div key={li} className={LINE_CLASS[l.kind]} ref={hi === 0 && li === firstChange ? first : undefined}>
-              {/* The line's number now; a removed line, the one it had */}
-              <span className="cl-n">{l.kind === '-' ? numbers[hi]![li]![0] : numbers[hi]![li]![1]}</span>
-              {l.kind === '\\' ? (
-                <span className="cl-t">{`\\${l.text}`}</span>
-              ) : html[hi] ? (
-                <span className="cl-t" dangerouslySetInnerHTML={{ __html: html[hi]![li] || ' ' }} />
-              ) : (
-                <span className="cl-t">{l.text || ' '}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      ))}
+      <Rows count={rows.length} row={row} height={(i) => (rows[i]![1] < 0 ? ROW_H + HUNK_EXTRA : ROW_H)} at={Math.max(0, firstChange)} />
     </div>
   )
 }
@@ -154,12 +231,16 @@ export function FileCode({ path, text, tone }: { path: string; text: string; /**
   }, [path, text])
   return (
     <div className={`wtc-code${tone ? ' toned' : ''}`} style={tone ? ({ '--tone': tone } as CSSProperties) : undefined}>
-      {lines.map((l, i) => (
-        <div key={i} className="cl">
-          <span className="cl-n">{i + 1}</span>
-          {html ? <span className="cl-t" dangerouslySetInnerHTML={{ __html: html[i] || ' ' }} /> : <span className="cl-t">{l || ' '}</span>}
-        </div>
-      ))}
+      <Rows
+        count={lines.length}
+        height={() => ROW_H}
+        row={(i) => (
+          <div key={i} className="cl">
+            <span className="cl-n">{i + 1}</span>
+            {html ? <span className="cl-t" dangerouslySetInnerHTML={{ __html: html[i] || ' ' }} /> : <span className="cl-t">{lines[i] || ' '}</span>}
+          </div>
+        )}
+      />
     </div>
   )
 }
