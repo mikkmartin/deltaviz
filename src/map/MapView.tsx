@@ -1,17 +1,22 @@
 import { hierarchy, treemap } from 'd3-hierarchy'
-import { alpha, black, mix, white } from '../palette.js'
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { alpha, black, mix, MONO, white } from '../palette.js'
+import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { DiffFile } from '../diff.js'
 import { useKept } from '../kept.js'
 import { baseName, edited, fateOf, folderOf, hasHeader, hasTitle, HEADER, renamedAway, renamedHere, type Area, type Fate, type R } from './cell.js'
 import { centre, ImportLines, type Link } from './importLines.js'
 import { ChangeLine, FileLabel, FolderLabel, RenameLabel } from './labels.js'
-import { isPkgCell, pkgArea, pkgCellId, PKG_DARKEN, PKG_STROKE, splitTile, packageUses } from './packages.prototype.js'
+import { isPkgCell, PKG_DIR, PKG_DIR_NAME, pkgArea, pkgCellId, PKG_DARKEN, PKG_STROKE, splitTile, packageUses } from './packages.prototype.js'
 import type { Graph } from './model.js'
 import type { Pointer } from './pointer.js'
 import { T } from './theme.js'
-import { exposedFiles, fmt, fmtBytes, startNode, type TreeNode } from './tree.js'
+import { useSize } from './useSize.js'
+import { Switch } from '../switch.js'
+import { TABS_INSET } from '../tabs.js'
+import { buildTree, exposedFiles, fmt, fmtBytes, startNode, type TreeNode } from './tree.js'
 
+/** Between the bar and the treemap (as .arch-map's gap) */
+const BAR_GAP = 10
 /** Corners of every cell */
 const RADIUS = 6
 /** Inside a folder, round what it holds (under its name row, when it has one) */
@@ -42,7 +47,7 @@ const outOf = (c: Box, W: number, H: number) => {
 const idAt = (target: EventTarget) => (target as Element).closest('[data-id]')?.getAttribute('data-id')
 
 /**
- * The whole codebase as a treemap: area = lines (or files), this branch's changes
+ * The whole codebase as a treemap: area = lines, this branch's changes
  * coloured; deleted files keep the area they had, outlined dashed, and a moved file's
  * old spot points to its new one. Click a folder to zoom in, a file for its diff (or its
  * code); hover to see its imports.
@@ -55,15 +60,22 @@ export function MapView(
     root: TreeNode
     byId: Map<string, TreeNode>
     width: number
+    /** All the room it has, its bar included (the bar wraps when narrow: the treemap gets what's left) */
     height: number
     mini?: boolean
     /** The text diff's files, once read: edited files show where their changes are */
     changes?: DiffFile[]
+    /** Files just touched on disk, each with what the save did to its lines: its cell (or the cell it's drawn in) flashes; a new `n` flashes again */
+    flash?: { paths: string[]; kinds: Record<string, '+' | '-' | '='>; n: number }
+    /** Drawn at the left end of the bar */
+    barStart?: ReactNode
+    /** Drawn at the right end of the bar */
+    barEnd?: ReactNode
     keepKey: string
     restore: boolean
     /** The folder to open zoomed into (where the CLI was run), else the first one with more than one child */
     startId?: string
-    /** PROTOTYPE: whether the installed packages are drawn (the checkbox in the bar) */
+    /** PROTOTYPE: whether the installed packages are drawn (the switch in the bar) */
     showPackages?: boolean
     onShowPackages?: (on: boolean) => void
     /** PROTOTYPE: whether devDependencies are among them */
@@ -73,28 +85,23 @@ export function MapView(
 ) {
   const { data, root, byId, width, height, mini, onHover: setHover } = props
   const [focusId, setFocusId] = useKept(`${props.keepKey}:focus`, (props.startId && byId.has(props.startId) ? props.startId : null) ?? startNode(root).id, props.restore)
-  const [area, setArea] = useKept<Area>(`${props.keepKey}:area`, 'lines', props.restore)
   /** Whether hovering a folder draws its imports (a big one has thousands) */
   const [folderLinks, setFolderLinks] = useKept(`${props.keepKey}:folder-links`, false, props.restore)
   const exposed = useMemo(() => exposedFiles(data), [data])
   const diffs = useMemo(() => new Map((props.changes ?? []).map((f) => [f.path, f])), [props.changes])
-  const W = Math.max(300, width)
-  const H = Math.max(mini ? 120 : 240, height)
-  // PROTOTYPE: the package.json section is always labelled in bundle bytes (and sized by their square root).
-  const areaOf = (id: string): Area => (isPkgCell(id) ? 'bytes' : area)
+  // PROTOTYPE: the root package.json, as a tree file, for the package.json section's header.
+  const pkgJson = useMemo(() => (data.pkgJson ? buildTree({ nodes: [data.pkgJson], edges: [] }).byId.get(data.pkgJson.id) : undefined), [data.pkgJson])
+  // Short of the bar's right end by the tabs' inset: the selected tab's pill lines up with the treemap's edge (only the tabs' faint ground goes past).
+  const W = Math.max(300, width - TABS_INSET)
+  const [barRef, bar] = useSize()
+  // Less the bar and the gap under it (.arch-map's)
+  const H = Math.max(mini ? 120 : 240, height - (bar.height || 30) - BAR_GAP)
+  // PROTOTYPE: the package.json section is sized by the square root of bundle bytes.
   const view = useMemo(() => {
     const top = byId.get(focusId) ?? root
     const h = hierarchy(top, (n) => (n.file ? null : n.children.filter((c) => !renamedAway(c))))
       .sum((n) =>
-        n.file
-          ? areaOf(n.id) === 'lines'
-            ? Math.max(1, n.file?.status === 'removed' ? n.baseLines : n.lines)
-            : isPkgCell(n.id)
-              ? pkgArea(n.bytes)
-              : areaOf(n.id) === 'bytes'
-              ? Math.max(1, n.file?.status === 'removed' ? n.baseBytes : n.bytes)
-              : 1
-          : 0,
+        n.file ? (isPkgCell(n.id) ? pkgArea(n.bytes) : Math.max(1, n.file.status === 'removed' ? n.baseLines : n.lines)) : 0,
       )
       .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
     // Folders pad what they hold, under a row for the name; the zoomed-in one is the canvas, unpadded.
@@ -123,7 +130,7 @@ export function MapView(
       if (!d.data.file) deepest = Math.max(deepest, d.depth)
     })
     return { top, laid, cells, radius, deepest }
-  }, [focusId, root, byId, W, H, area])
+  }, [focusId, root, byId, W, H])
 
   // A hovered file too small to draw (or outside the zoom) lights the cell it's drawn in.
   let hover: string | null = null
@@ -274,12 +281,12 @@ export function MapView(
   const drawn = (
     <>
       <rect width={W} height={H} fill={T.canvas} />
-      <Cells view={view} exposed={exposed} diffs={diffs} area={area} />
+      <Cells view={view} exposed={exposed} diffs={diffs} pkgJson={pkgJson} />
       <Beacons view={view} exposed={exposed} />
       {/* Over the cells (folders are solid): a hovered folder (or a hovered file's), faintly lit. */}
       {focusCell && <rect x={focusCell.x0} y={focusCell.y0} width={focusCell.x1 - focusCell.x0} height={focusCell.y1 - focusCell.y0} rx={view.radius.get(focusCell.data.id)} fill={alpha(T.ink, 0.07)} pointerEvents="none" />}
-      {holder && <HoverLayer view={view} cell={holder} area={area} />}
-      {hoverCell && <HoverLayer view={view} cell={hoverCell} area={area} />}
+      {holder && <HoverLayer view={view} cell={holder} pkgJson={pkgJson} diffs={diffs} />}
+      {hoverCell && <HoverLayer view={view} cell={hoverCell} pkgJson={pkgJson} diffs={diffs} />}
       <defs>
         {/* PROTOTYPE: a package that adds nothing to a bundle (a node builtin, or not installed): hatched */}
         <pattern id="lm-pkg-free" width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -305,6 +312,7 @@ export function MapView(
           </g>
         )
       })}
+      {props.flash && <Flash view={view} byId={byId} flash={props.flash} pkgJson={pkgJson} />}
       {hoverCell && links.length > 0 && <ImportLines links={links} from={hoverCell} radius={view.radius.get(hoverCell.data.id) ?? 0} />}
       {pkgLayer}
     </>
@@ -314,14 +322,16 @@ export function MapView(
   for (let t: TreeNode | null = view.top; t; t = t.parent) crumbs.unshift(t)
   return (
     <>
-      <div className="arch-bar">
-        <span className="arch-seg">
+      <div className="arch-bar" ref={barRef}>
+        {props.barStart}
+        {/* Zoomed in: the way back out. At the top there's nowhere to go. */}
+        {crumbs.length > 1 && <span className="arch-seg">
           {crumbs.map((c, i) => (
             <button key={c.id || 'root'} onClick={() => zoomTo(c.id)} className={i === crumbs.length - 1 ? 'on' : ''}>
               {c.id === '' ? '(repo)' : c.name}
             </button>
           ))}
-        </span>
+        </span>}
         {!mini && <span className="lm-muted">
           {fmt(view.top.lines)} lines · {view.top.files} files{view.top.changed ? ` · ${view.top.changed} changed` : ''} · hover: <span style={{ color: T.importOut }}>imports</span> /{' '}
           <span style={{ color: T.importIn }}>imported by</span>
@@ -330,30 +340,15 @@ export function MapView(
         </span>}
         <span className="arch-grow" />
         {!mini && (
-          <label className="arch-check" title="Show the installed packages the code imports (on by default when this branch changes which it imports)">
-            <input type="checkbox" checked={!!props.showPackages} onChange={(e) => props.onShowPackages?.(e.target.checked)} />
-            packages
-          </label>
+          <Switch label="packages" title="Show the installed packages the code imports (on by default when this branch changes which it imports)" checked={!!props.showPackages} onToggle={() => props.onShowPackages?.(!props.showPackages)} />
         )}
         {!mini && (
-          <label className="arch-check" title="Include devDependencies among the packages (on by default when this branch changes which it imports)" style={props.showPackages ? undefined : { opacity: 0.4 }}>
-            <input type="checkbox" disabled={!props.showPackages} checked={!!props.showDev} onChange={(e) => props.onShowDev?.(e.target.checked)} />
-            devDependencies
-          </label>
+          <Switch label="devDependencies" title="Include devDependencies among the packages (on by default when this branch changes which it imports)" disabled={!props.showPackages} checked={!!props.showDev} onToggle={() => props.onShowDev?.(!props.showDev)} />
         )}
         {!mini && (
-          <label className="arch-check" title="Draw a folder's imports when hovering it">
-            <input type="checkbox" checked={folderLinks} onChange={(e) => setFolderLinks(e.target.checked)} />
-            show folder dependencies on hover
-          </label>
+          <Switch label="show folder dependencies on hover" title="Draw a folder's imports when hovering it" checked={folderLinks} onToggle={() => setFolderLinks(!folderLinks)} />
         )}
-        {!mini && <span className="arch-seg" title="What the area shows">
-          {(['lines', 'files', 'bytes'] as const).map((a) => (
-            <button key={a} className={area === a ? 'on' : ''} onClick={() => setArea(a)}>
-              {a === 'bytes' ? 'disk' : a}
-            </button>
-          ))}
-        </span>}
+        {props.barEnd}
       </div>
         <svg
           width={W}
@@ -372,7 +367,8 @@ export function MapView(
             const id = idAt(e.target)
             const c = id == null ? undefined : view.cells.get(id)
             if (!c) return
-            if (c.data.file) props.onOpen(c.data.id)
+            // PROTOTYPE: the package.json section (a package, or the section itself) opens package.json.
+            if (c.data.file || isPkgCell(c.data.id)) props.onOpen(c.data.id)
             else if (c.depth > 0) zoomTo(c.data.id)
           }}
         >
@@ -380,7 +376,7 @@ export function MapView(
           {leaving && (
             <g ref={old} pointerEvents="none">
               <rect width={W} height={H} fill={T.canvas} />
-              <Cells view={leaving} exposed={exposed} diffs={diffs} area={area} />
+              <Cells view={leaving} exposed={exposed} diffs={diffs} pkgJson={pkgJson} />
             </g>
           )}
           <g ref={current}>{drawn}</g>
@@ -405,7 +401,8 @@ const folderFill = (depth: number, deepest: number) =>
  * under its name; unchanged ones lighter when something outside their folder imports them.
  */
 function fill(t: TreeNode, fate: Fate, exposed: Set<string>): string {
-  if (edited(t)) return alpha(T.modified, 0.1)
+  // Faint: a stronger amber over the dark reads as brown; the outline and name carry the colour.
+  if (edited(t)) return alpha(T.modified, 0.04)
   const unchanged = alpha(T.ink, exposed.has(t.id) ? 0.14 : 0.03)
   return { movedHere: alpha(T.moved, 0.16), movedAway: alpha(T.moved, 0.07), deleted: alpha(T.removed, 0.14), added: alpha(T.added, 0.25) }[fate as string] ?? unchanged
 }
@@ -423,6 +420,9 @@ function stroke(t: TreeNode, fate: Fate, exposed: Set<string>): string {
 /** A changed file's name: in its fate's colour, struck through when deleted */
 const NAME: Partial<Record<Fate, string>> = { movedAway: T.moved, deleted: T.removed, edited: T.modified, added: T.added }
 
+/** What a cell's area and size label stand for: code is sized by lines; PROTOTYPE: packages by bundle bytes */
+const areaOf = (id: string): Area => (isPkgCell(id) ? 'bytes' : 'lines')
+
 /** The laid-out treemap MapView draws */
 type Layout = { top: TreeNode; laid: R; cells: Map<string, R>; radius: Map<string, number>; deepest: number }
 
@@ -430,12 +430,12 @@ type Layout = { top: TreeNode; laid: R; cells: Map<string, R>; radius: Map<strin
  * Every cell of the treemap, as it is with nothing hovered: drawn once per layout, data
  * or diff, never on hover (HoverLayer draws over it). Thousands of cells in a big repo.
  */
-const Cells = memo(function Cells({ view, exposed, diffs, area: shown }: { view: Layout; exposed: Set<string>; diffs: Map<string, DiffFile>; area: Area }) {
+const Cells = memo(function Cells({ view, exposed, diffs, pkgJson }: { view: Layout; exposed: Set<string>; diffs: Map<string, DiffFile>; pkgJson?: TreeNode }) {
   return (
     <>
       {view.laid.descendants().map((d) => {
         const t = d.data
-        const area = isPkgCell(t.id) ? 'bytes' : shown
+        const area = areaOf(t.id)
         const w = d.x1 - d.x0
         const h = d.y1 - d.y0
         const fate = fateOf(t)
@@ -444,8 +444,8 @@ const Cells = memo(function Cells({ view, exposed, diffs, area: shown }: { view:
         // The outline sits inside the cell: inset by half its width (a stroke straddles the edge).
         const inset = line === 'none' ? 0 : 0.5
         return (
-          <g key={t.id || 'root'} data-id={t.id} style={{ cursor: t.file ? 'pointer' : 'zoom-in' }}>
-            <title>{`${t.id}\n${
+          <g key={t.id || 'root'} data-id={t.id} style={{ cursor: t.file || isPkgCell(t.id) ? 'pointer' : 'zoom-in' }}>
+            <title>{`${isPkgCell(t.id) ? PKG_DIR_NAME + t.id.slice(PKG_DIR.length) : t.id}\n${
               fate === 'movedAway'
                 ? `moved to ${t.file!.to}, ${fmt(t.baseLines)} lines`
                 : fate === 'deleted'
@@ -472,9 +472,9 @@ const Cells = memo(function Cells({ view, exposed, diffs, area: shown }: { view:
               strokeDasharray={fate === 'deleted' ? '3 2' : undefined}
             />
             {edited(t) && <ChangeLine cell={d} diff={diffs.get(t.id)} />}
-            {!t.file && hasHeader(d) && <FolderLabel cell={d} area={area} detail={false} />}
+            {!t.file && hasHeader(d) && (t.id === PKG_DIR && pkgJson && edited(pkgJson) ? <PkgJsonHeader cell={d} file={pkgJson} diff={diffs.get(pkgJson.id)} /> : <FolderLabel cell={d} area={area} detail={false} />)}
             {t.file && !edited(t) && !renamedHere(t) && w > 40 && h > 26 && (
-              <text x={d.x0 + 3} y={d.y0 + 22} fontSize={8.5} fill={t.file.status === 'added' ? T.addedSize : T.dim} fontFamily="ui-monospace, monospace" pointerEvents="none">
+              <text x={d.x0 + 3} y={d.y0 + 22} fontSize={8.5} fill={t.file.status === 'added' ? T.addedSize : T.dim} fontFamily={MONO} pointerEvents="none">
                 {(area === 'bytes'
                   ? fmtBytes(t.file.status === 'removed' ? t.baseBytes : t.bytes)
                   : `${fmt(t.file.status === 'removed' ? t.baseLines : t.lines)} lines`
@@ -482,7 +482,7 @@ const Cells = memo(function Cells({ view, exposed, diffs, area: shown }: { view:
               </text>
             )}
             {t.file && fate === 'same' && hasTitle(d) && (
-              <text x={d.x0 + 3} y={d.y0 + 11} fontSize={9.5} fill={T.text} fontFamily="ui-monospace, monospace" pointerEvents="none">
+              <text x={d.x0 + 3} y={d.y0 + 11} fontSize={9.5} fill={T.text} fontFamily={MONO} pointerEvents="none">
                 {t.name.slice(0, Math.floor(w / 6))}
               </text>
             )}
@@ -495,7 +495,7 @@ const Cells = memo(function Cells({ view, exposed, diffs, area: shown }: { view:
                     fontSize={9.5}
                     fill={(edited(t) ? T.modified : NAME[fate]) ?? T.text}
                     textDecoration={fate === 'deleted' ? 'line-through' : undefined}
-                    fontFamily="ui-monospace, monospace"
+                    fontFamily={MONO}
                     pointerEvents="none"
                   >
                     {renamedHere(t) ? (
@@ -514,6 +514,35 @@ const Cells = memo(function Cells({ view, exposed, diffs, area: shown }: { view:
     </>
   )
 })
+
+/**
+ * PROTOTYPE: the package.json section's header when the root package.json changed: its name
+ * in the edited colour, the file's `+a−d` at the right, and where it changed under them.
+ */
+function PkgJsonHeader({ cell, file, diff }: { cell: R; file: TreeNode; diff?: DiffFile }) {
+  // Set as a folder's name row is (FolderLabel), so hovering the section doesn't move it.
+  const chars = Math.floor((cell.x1 - cell.x0 - 8) / 6.3)
+  const added = file.added > 0 ? `+${fmt(file.added)}` : ''
+  const deleted = file.deleted > 0 ? `−${fmt(file.deleted)}` : ''
+  const counts = PKG_DIR_NAME.length + 2 + added.length + deleted.length <= chars
+  // As the file's own cell would be, at the top of the section: the change line (4px at 16px down) ends at the name row's bottom.
+  const row = { ...cell, data: file, y1: cell.y0 + Math.max(HEADER, 24) } as R
+  const text = { y: cell.y0 + 13, fontSize: 10, fontFamily: MONO, pointerEvents: 'none' } as const
+  return (
+    <>
+      <text x={cell.x0 + 4} fill={T.modified} {...text}>
+        {PKG_DIR_NAME.slice(0, chars)}
+      </text>
+      {counts && (
+        <text x={cell.x1 - 5} textAnchor="end" {...text}>
+          <tspan fill={T.added}>{added}</tspan>
+          <tspan fill={T.removed}>{deleted}</tspan>
+        </text>
+      )}
+      <ChangeLine cell={row} diff={diff} />
+    </>
+  )
+}
 
 /** A changed file's colour, as its name's */
 const fateColor = (t: TreeNode, fate: Fate) => (edited(t) ? T.modified : (NAME[fate] ?? (fate === 'renamed' ? T.added : undefined)))
@@ -550,13 +579,55 @@ function Beacons({ view, exposed }: { view: Layout; exposed: Set<string> }) {
   )
 }
 
+/** How long a touched file's flash takes to fade */
+const FLASH_MS = 900
+
+/** A flash's colour: by what the save did to the file's lines */
+const FLASH_COLOR = { '+': T.added, '-': T.removed, '=': T.ink }
+
+/**
+ * Touched files, flashed over the cells by what the save did, fading out: green when it added
+ * lines, red when it removed them, gray when it neither (an edit in place). A file too small to
+ * draw, or outside the zoom, flashes the cell it's drawn in; one gone (not in the tree) the
+ * nearest folder that is. PROTOTYPE: with the package.json section drawn, the root package.json
+ * flashes the section.
+ */
+const Flash = memo(function Flash({ view, byId, flash, pkgJson }: { view: Layout; byId: Map<string, TreeNode>; flash: { paths: string[]; kinds: Record<string, '+' | '-' | '='>; n: number }; pkgJson?: TreeNode }) {
+  const cells = new Map<string, { cell: R; color: string }>()
+  for (const p of flash.paths) {
+    const color = FLASH_COLOR[flash.kinds[p] ?? '=']
+    let at: TreeNode | null = null
+    if (pkgJson && p === pkgJson.id) at = byId.get(PKG_DIR) ?? null
+    else {
+      let id: string | null = p
+      while (id !== null && !byId.has(id)) id = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : id ? '' : null
+      at = id === null ? null : (byId.get(id) ?? null)
+    }
+    for (let t = at; t; t = t.parent) {
+      const c = view.cells.get(t.id)
+      if (c && c.depth > 0) {
+        // Several files in one cell: a change's colour over the neutral.
+        if (!cells.has(c.data.id) || color !== T.ink) cells.set(c.data.id, { cell: c, color })
+        break
+      }
+    }
+  }
+  return (
+    <g pointerEvents="none">
+      {[...cells.values()].map(({ cell: c, color }) => (
+        <rect key={`${flash.n}:${c.data.id}`} x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} rx={view.radius.get(c.data.id)}
+          fill={color} opacity={0} style={{ animation: `dv-flash ${FLASH_MS}ms ease-out` }} />
+      ))}
+    </g>
+  )
+})
+
 /**
  * What hovering adds over the cells, so they never redraw for it. A file: a white outline.
  * A folder: its name row in the accent with its change stats, what it holds lit a
  * little, and its direct subfolders outlined and named in white, or itself outlined when it has none.
  */
-const HoverLayer = memo(function HoverLayer({ view, cell, area: shown }: { view: Layout; cell: R; area: Area }) {
-  const areaOf = (c: R): Area => (isPkgCell(c.data.id) ? 'bytes' : shown)
+const HoverLayer = memo(function HoverLayer({ view, cell, pkgJson, diffs }: { view: Layout; cell: R; pkgJson?: TreeNode; diffs: Map<string, DiffFile> }) {
   const t = cell.data
   const w = cell.x1 - cell.x0
   const r = (c: R) => view.radius.get(c.data.id) ?? 0
@@ -590,14 +661,18 @@ const HoverLayer = memo(function HoverLayer({ view, cell, area: shown }: { view:
             {cell.children?.map((c) => <rect key={c.data.id} x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} rx={r(c)} fill={black} />)}
           </mask>
           <path d={topRounded(cell.x0, cell.y0, w, HEADER + HEADER_FADE, r(cell))} fill="url(#lm-head-fade)" mask="url(#lm-head)" />
-          <FolderLabel cell={cell} area={areaOf(cell)} detail />
+          {t.id === PKG_DIR && pkgJson && edited(pkgJson) ? (
+            <PkgJsonHeader cell={cell} file={pkgJson} diff={diffs.get(pkgJson.id)} />
+          ) : (
+            <FolderLabel cell={cell} area={areaOf(cell.data.id)} detail />
+          )}
         </>
       )}
       {/* What it holds, lit a little */}
       {cell.descendants().map((c) => c.data.file && <rect key={c.data.id} x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} rx={r(c)} fill={alpha(T.hover, 0.06)} />)}
       {subfolders.length ? subfolders.map((c) => outline(c, T.accent, 1)) : outline(cell, T.accent, 1)}
       {/* Drawn over their own names */}
-      {subfolders.map((c) => hasHeader(c) && <FolderLabel key={c.data.id} cell={c} area={areaOf(c)} detail={false} lit />)}
+      {subfolders.map((c) => hasHeader(c) && <FolderLabel key={c.data.id} cell={c} area={areaOf(c.data.id)} detail={false} lit />)}
     </g>
   )
 })

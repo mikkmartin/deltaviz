@@ -4,7 +4,7 @@ import type { TreeNode } from './tree.js'
 
 export type R = HierarchyRectangularNode<TreeNode>
 /** What the area of a cell stands for */
-export type Area = 'lines' | 'files' | 'bytes'
+export type Area = 'lines' | 'bytes'
 
 /** A labelled folder's name row */
 export const HEADER = 20

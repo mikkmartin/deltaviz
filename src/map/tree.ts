@@ -1,5 +1,6 @@
 /** Folder tree over the file graph: sizes and changes rolled up per folder. */
 import type { Graph, GraphNode } from './model.js'
+import { PKG_DIR, PKG_DIR_NAME } from './packages.prototype.js'
 
 export interface TreeNode {
   /** Folder path or file path */
@@ -31,7 +32,7 @@ export function buildTree(g: Graph): { root: TreeNode; byId: Map<string, TreeNod
     if (known) return known
     const cut = path.lastIndexOf('/')
     const parent = dir(cut === -1 ? '' : path.slice(0, cut))
-    const node: TreeNode = { id: path, name: path.slice(cut + 1), parent, children: [], file: null, ...blank }
+    const node: TreeNode = { id: path, name: path === PKG_DIR ? PKG_DIR_NAME : path.slice(cut + 1), parent, children: [], file: null, ...blank }
     parent.children.push(node)
     dirs.set(path, node)
     return node

@@ -1,5 +1,5 @@
 /** The hovered file's or folder's imports, drawn over the Tree. */
-import { alpha, black, white } from '../palette.js'
+import { alpha, black, MONO, white } from '../palette.js'
 import { useId } from 'react'
 import type { R } from './cell.js'
 import type { Status } from './model.js'
@@ -35,7 +35,7 @@ function Rows({ x, y, parts, size }: { x: number; y: number; parts: Part[]; size
   const line = size * 1.05
   const top = y - ((parts.length - 1) * line) / 2 + size * 0.35
   return (
-    <text textAnchor="middle" fontSize={size} fontWeight={700} fontFamily="ui-monospace, monospace">
+    <text textAnchor="middle" fontSize={size} fontFamily={MONO}>
       {parts.map((p, i) => (
         <tspan key={i} x={x} y={top + i * line} fill={p.color}>
           {p.n}

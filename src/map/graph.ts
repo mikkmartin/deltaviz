@@ -26,6 +26,11 @@ export function isSource(file: string): boolean {
   return SOURCE.test(file) && !SKIP_DIR.test(file) && !/\.(?:d\.ts|min\.js)$/.test(file)
 }
 
+export const isPackageJson = (file: string) => (file === 'package.json' || file.endsWith('/package.json')) && !SKIP_DIR.test(file)
+
+/** What the graph holds: source files, and the package.jsons beside them (no imports, but their changes show) */
+export const isGraphFile = (file: string) => isSource(file) || isPackageJson(file)
+
 /** Specifiers of static imports, re-exports, dynamic import(), require() and Sass @use/@forward. */
 export function parseImports(src: string): string[] {
   const out = new Set<string>()
@@ -166,10 +171,9 @@ function packageOf(from: string, spec: string, own: Set<string>): string | undef
 const BUILTINS = new Set(['fs', 'path', 'os', 'url', 'http', 'https', 'net', 'child_process', 'crypto', 'stream', 'events', 'util', 'assert', 'zlib', 'buffer', 'readline', 'worker_threads', 'module', 'process', 'tty', 'dns', 'querystring', 'perf_hooks', 'timers', 'v8', 'vm'])
 
 function edgesOf(snap: Snapshot): { files: Set<string>; edges: Set<string>; packages: Set<string>; kinds: Map<string, PackageKind>; stats: Map<string, FileStats>; declared: Record<'dep' | 'dev', string> } {
-  const files = new Set(snap.files.filter(isSource))
+  const files = new Set(snap.files.filter(isGraphFile))
   const pkgs = snap.files
-    .filter((f) => f === 'package.json' || f.endsWith('/package.json'))
-    .filter((f) => !SKIP_DIR.test(f))
+    .filter(isPackageJson)
     .map((f) => parsePackageJson(f, snap.read(f)))
     .filter((p): p is Pkg => !!p)
   const resolve = makeResolver(files, pkgs)
@@ -188,6 +192,7 @@ function edgesOf(snap: Snapshot): { files: Set<string>; edges: Set<string>; pack
   for (const f of files) {
     const src = snap.read(f)
     stats.set(f, { lines: countLines(src), bytes: Buffer.byteLength(src), length: src ? src.replace(/\n$/, '').split('\n').length : 0 })
+    if (!isSource(f)) continue
     for (const spec of parseImports(src)) {
       const t = resolve(f, spec)
       if (t && t !== f) edges.add(`${f}\n${t}`)

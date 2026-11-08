@@ -23,7 +23,7 @@ Needs Node 24 and git.
 
 ```sh
 npm install
-npm run dev           # build, then serve this repo
+npm run dev           # serve this repo; rebuilds and reloads the page on save
 ```
 
 MIT
