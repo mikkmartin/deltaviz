@@ -4,7 +4,7 @@ import path from 'node:path'
 import { branchBase } from '../base.js'
 import { addedLines, readRegular } from '../files.js'
 import type { Mode } from '../diff.js'
-import { diffGraph, isSource, parseNumstat, type Graph, type Numstat, type Snapshot } from './graph.js'
+import { diffGraph, isGraphFile, isSource, parseNumstat, type Graph, type Numstat, type Snapshot } from './graph.js'
 
 /**
  * The Map tab: the module graph of a checkout, diffed against where its branch left
@@ -67,7 +67,7 @@ function readBlobs(cwd: string, rev: string, files: string[]): Promise<Map<strin
 }
 
 /** Package manifests resolve workspace imports; read them alongside the sources. */
-const wanted = (f: string) => isSource(f) || f === 'package.json' || f.endsWith('/package.json')
+const wanted = isGraphFile
 
 /** `mode`: against the branch's merge-base, or only what's uncommitted (against HEAD). */
 export async function readGraph(checkout: string, configuredBase?: unknown, mode: Mode = 'branch'): Promise<GraphResponse> {
@@ -105,10 +105,10 @@ export async function readGraph(checkout: string, configuredBase?: unknown, mode
     ])
     numstat = parseNumstat(diff)
     // Untracked files aren't in git diff: count them as all added.
-    for (const f of records(untracked).filter(isSource)) {
+    for (const f of records(untracked).filter(isGraphFile)) {
       numstat[f] = { added: addedLines(head.read(f)), deleted: 0 }
     }
-    dirty = records(status).filter((l) => isSource(l.slice(3))).length
+    dirty = records(status).filter((l) => isGraphFile(l.slice(3))).length
   }
   const graph = diffGraph(base, head, numstat)
   const packageBundle = await bundleSizes(dir, head, graph.packages ?? [])
@@ -251,14 +251,19 @@ function packageBytes(dir: string, files: string[], edges: { target: string }[])
 }
 
 /**
- * A graph node's text as it is on disk, for the Tree's code view of a file
- * without changes. `file` is repo-relative, like the graph's ids; only source
- * files inside the repo are read.
+ * A file's text as it is on disk, for the code view (and a changed file's whole-file
+ * diff). `file` is repo-relative, like the graph's ids; only files inside the repo
+ * that git doesn't ignore are read.
  */
 export async function readSource(checkout: string, file: string): Promise<{ path: string; text: string }> {
   const dir = (await git(checkout, ['rev-parse', '--show-toplevel']).catch(() => fail(404, 'not a git repository'))).trim()
   const rel = path.posix.normalize(file)
-  if (!isSource(rel) || path.posix.isAbsolute(rel) || rel.startsWith('../')) fail(400, `not a source file: ${file}`)
+  // Any `.git` on the way, in any case (macOS and Windows filesystems don't tell `.GIT` from `.git`).
+  if (path.posix.isAbsolute(rel) || rel.startsWith('../') || rel.toLowerCase().split('/').includes('.git')) fail(400, `not a file in the repo: ${file}`)
+  // Anything git would show: not what it ignores (.env, build output, node_modules).
+  // Exit 1 is "not ignored"; 0 is ignored, and anything else (a path past a symlink) is refused too.
+  const shown = await new Promise<boolean>((resolve) => execFile('git', ['check-ignore', '-q', '--', rel], { cwd: dir }, (err) => resolve(err?.code === 1)))
+  if (!shown) fail(403, `ignored by git: ${file}`)
   const full = path.join(dir, rel)
   // A linked folder on the way could lead out of the repo.
   const real = (p: string) => fs.realpathSync(p)

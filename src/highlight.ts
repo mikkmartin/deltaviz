@@ -2,10 +2,15 @@ import { highlight, type LanguageName } from 'sugar-high'
 import { lang } from 'sugar-high/lang'
 import type { Hunk } from './diff.js'
 
-/** Token colours (GitHub dark), for the `--sh-*` variables sugar-high's spans use */
+/**
+ * Token colours, deltaviz's own ("nocturne"): a cool base (cornflower keywords, seafoam strings,
+ * orchid calls, misty properties) with one warm accent (apricot types and numbers); no pure green
+ * or red, so the code never competes with the diff's. For the `--sh-*` variables sugar-high's spans use.
+ */
 export const HIGHLIGHT_CSS = `
-.wtc-code { --sh-class: #ffa657; --sh-identifier: #e6edf3; --sh-sign: #8b949e; --sh-property: #79c0ff; --sh-entity: #7ee787;
-  --sh-jsxliterals: #e6edf3; --sh-string: #a5d6ff; --sh-keyword: #ff7b72; --sh-comment: #8b949e; }
+.wtc-code { --sh-keyword: #9db1ff; --sh-string: #8fd3c8; --sh-class: #f4b98a; --sh-entity: #e2c2f5; --sh-property: #c3cbe0;
+  --sh-identifier: #e1e3ea; --sh-jsxliterals: #e1e3ea; --sh-sign: #868a99; --sh-comment: #5f6371; }
+.wtc-code .sh__token--comment { font-style: italic; }
 `
 
 /** The file's language from its extension (or name: Dockerfile); null when sugar-high has none */

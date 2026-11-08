@@ -30,6 +30,8 @@ Options:
 const DIST = path.dirname(new URL(import.meta.url).pathname)
 const VERSION: string = JSON.parse(fs.readFileSync(path.join(DIST, '../package.json'), 'utf8')).version
 const PORT_TRIES = 20
+/** Run by `npm run dev`: pages reload when the app is rebuilt or the server restarts */
+const DEV = process.env.DELTAVIZ_DEV === '1'
 
 // Our own git reads mustn't write the index (a refresh would wake the watcher).
 process.env.GIT_OPTIONAL_LOCKS = '0'
@@ -80,7 +82,14 @@ if (!fs.existsSync(cwd)) die(`no such folder: ${cwd}`)
 const root = await git(cwd, ['rev-parse', '--show-toplevel']).catch(() => die(`not inside a git repository: ${cwd}`))
 /** Where it was run, relative to the repo: the folder the Tree opens zoomed into */
 const start = (await git(cwd, ['rev-parse', '--show-prefix'])).replace(/\/$/, '')
-const name = path.basename(root)
+const commonDir = path.resolve(root, await git(root, ['rev-parse', '--git-common-dir']))
+/**
+ * The project: the main checkout's folder, also from a linked worktree. Only when the shared
+ * git dir is a checkout's `.git`: a submodule's (`.git/modules/x`) or a moved one says nothing, so its own folder.
+ */
+const name = path.basename(commonDir) === '.git' ? path.basename(path.dirname(commonDir)) : path.basename(root)
+/** A linked worktree's folder, else null */
+const worktree = path.resolve(root, await git(root, ['rev-parse', '--git-dir'])) === commonDir ? null : path.basename(root)
 
 /** Each mode's last read, as sent; dropped when something changes */
 type Reads = { graph: Promise<string>; diff: Promise<string> }
@@ -102,8 +111,11 @@ const read = (mode: Mode): Reads => {
 const clients = new Set<http.ServerResponse>()
 const settled = (p: Promise<string>) => p.catch((e: Error) => `!${e.message}`)
 
-/** Re-reads what the pages show; tells them only if any of it changed. */
-async function changed() {
+/**
+ * Re-reads what the pages show, then tells them which files were touched (to flash)
+ * and whether any of what they show changed (to re-read).
+ */
+async function changed(paths: string[]) {
   const before = new Map([...cache].map(([m, r]) => [m, Promise.all([settled(r.graph), settled(r.diff)])]))
   cache.clear()
   let differs = before.size === 0
@@ -112,7 +124,9 @@ async function changed() {
     const [a, b] = await old
     if (a !== (await settled(r.graph)) || b !== (await settled(r.diff))) differs = true
   }
-  if (differs) for (const c of clients) c.write('data: change\n\n')
+  if (!differs && !paths.length) return
+  const msg = `data: ${JSON.stringify({ changed: differs, paths })}\n\n`
+  for (const c of clients) c.write(msg)
 }
 
 const html = `<!doctype html>
@@ -125,7 +139,7 @@ const html = `<!doctype html>
 </head>
 <body>
 <div id="root"></div>
-<script>window.DELTAVIZ = ${JSON.stringify({ name, root, start }).replace(/</g, '\\u003c')}</script>
+<script>window.DELTAVIZ = ${JSON.stringify({ name, worktree, root, start, dev: DEV }).replace(/</g, '\\u003c')}</script>
 <script type="module" src="/app.js"></script>
 </body>
 </html>`
@@ -141,14 +155,34 @@ const json = (res: http.ServerResponse, p: Promise<string>) =>
     (e: Error & { status?: number }) => send(res, e.status ?? 500, 'application/json', JSON.stringify({ error: e.message })),
   )
 
+/** Only pages from this server: a page elsewhere that rebinds its name to 127.0.0.1 (DNS rebinding) is refused. */
+const ownHost = (host: string | undefined) => !!host && /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)
+
 const server = http.createServer((req, res) => {
+  if (!ownHost(req.headers.host)) return send(res, 403, 'text/plain', 'forbidden')
   const url = new URL(req.url ?? '/', 'http://x')
   const mode: Mode = url.searchParams.get('mode') === 'uncommitted' ? 'uncommitted' : 'branch'
   switch (url.pathname) {
     case '/':
       return send(res, 200, 'text/html; charset=utf-8', html)
     case '/app.js':
-      return send(res, 200, 'text/javascript', fs.readFileSync(path.join(DIST, 'app.js')))
+      // Mid-rebuild (dev) it can be missing for a moment: an error the page retries on, not a crash.
+      try {
+        return send(res, 200, 'text/javascript', fs.readFileSync(path.join(DIST, 'app.js')))
+      } catch (e) {
+        return send(res, 503, 'text/plain', `deltaviz: can't read the page: ${(e as Error).message}`)
+      }
+    case '/GeistMono-Variable.woff2': {
+      // Missing (a build without assets/): the page falls back to the system's monospace, the server stays up.
+      let font: Buffer
+      try {
+        font = fs.readFileSync(path.join(DIST, 'GeistMono-Variable.woff2'))
+      } catch {
+        return send(res, 404, 'text/plain', 'not found')
+      }
+      res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'max-age=31536000, immutable' })
+      return void res.end(font)
+    }
     case '/health':
       return send(res, 200, 'application/json', JSON.stringify({ app: 'deltaviz', version: VERSION, root }))
     case '/graph':
@@ -185,6 +219,18 @@ async function listen(): Promise<number> {
     }
   }
   die(`no free port in ${opts.port}–${opts.port + PORT_TRIES - 1}`)
+}
+
+// Dev: a rebuilt page reloads the open ones.
+if (DEV) {
+  let t: NodeJS.Timeout | undefined
+  fs.watch(DIST, (_, f) => {
+    if (f !== 'app.js') return
+    clearTimeout(t)
+    t = setTimeout(() => {
+      for (const c of clients) c.write('event: reload\ndata:\n\n')
+    }, 100)
+  })
 }
 
 const port = await listen()

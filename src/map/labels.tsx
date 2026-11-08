@@ -3,10 +3,10 @@ import type { ReactNode } from 'react'
 import type { DiffFile } from '../diff.js'
 import { edited, fateOf, hasTitle, HEADER, type Area, type R } from './cell.js'
 import { changeRuns, type Run } from './runs.js'
+import { MONO } from '../palette.js'
 import { T } from './theme.js'
 import { fmt, fmtBytes, type TreeNode } from './tree.js'
 
-const MONO = 'ui-monospace, monospace'
 
 /**
  * A rename in place: the old name struck through in red, then the new one in green, on one line if
@@ -83,13 +83,13 @@ export function FolderLabel({ cell, area, detail, lit }: { cell: R; area: Area; 
   const share = `${t.changed}/${t.files} · `
   const name = `${t.name}  `
   const text = (children: ReactNode) => (
-    <text x={cell.x0 + 4} y={cell.y0 + 13} fontSize={10} fontWeight={600} fontFamily={MONO} pointerEvents="none">
+    <text x={cell.x0 + 4} y={cell.y0 + 13} fontSize={10} fontFamily={MONO} pointerEvents="none">
       {children}
     </text>
   )
   if (!t.changed || !detail) {
     // The size in gray: only the name says whether the folder changed.
-    const size = area === 'bytes' ? fmtBytes(t.bytes) : fmt(area === 'lines' ? t.lines : t.files)
+    const size = area === 'bytes' ? fmtBytes(t.bytes) : fmt(t.lines)
     const shown = name.slice(0, chars)
     return text(
       <>
@@ -105,7 +105,7 @@ export function FolderLabel({ cell, area, detail, lit }: { cell: R; area: Area; 
     <>
       {text(<tspan fill={T.onAccent}>{counts ? t.name : t.name.slice(0, chars)}</tspan>)}
       {counts && (
-        <text x={cell.x1 - 5} y={cell.y0 + 13} textAnchor="end" fontSize={10} fontWeight={600} fontFamily={MONO} pointerEvents="none">
+        <text x={cell.x1 - 5} y={cell.y0 + 13} textAnchor="end" fontSize={10} fontFamily={MONO} pointerEvents="none">
           {withShare && <tspan fill={T.onAccentMuted}>{share}</tspan>}
           <tspan fill={T.addedOnAccent}>{added}</tspan>
           <tspan fill={T.removedOnAccent}>{deleted}</tspan>

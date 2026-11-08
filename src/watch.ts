@@ -5,8 +5,9 @@ import path from 'node:path'
 /**
  * Calls `onChange` once things settle (DEBOUNCE_MS without an event) after
  * anything in the worktree that git doesn't ignore changes, or the git state
- * does: HEAD, the index, refs. Runs one `onChange` at a time; events during one
- * call it once more after.
+ * does: HEAD, the index, refs. It gets the worktree paths (repo-relative) that
+ * changed; none when only the git state did. Runs one `onChange` at a time;
+ * events during one call it once more after.
  */
 
 const DEBOUNCE_MS = 300
@@ -20,7 +21,7 @@ const git = (cwd: string, args: string[], input?: string) =>
 /** Inside a git dir, what moves the state: not objects, logs, lock files or other worktrees' dirs */
 const gitStateFile = (rel: string) => !/^(objects|logs|hooks|info|lfs|rr-cache|worktrees)(\/|$)/.test(rel) && !rel.endsWith('.lock') && !/fsmonitor|COMMIT_EDITMSG/.test(rel)
 
-export async function watch(root: string, onChange: () => Promise<void>) {
+export async function watch(root: string, onChange: (paths: string[]) => Promise<void>) {
   const abs = (p: string) => path.resolve(root, p.trim())
   const gitDir = abs(await git(root, ['rev-parse', '--git-dir']))
   const commonDir = abs(await git(root, ['rev-parse', '--git-common-dir']))
@@ -41,10 +42,11 @@ export async function watch(root: string, onChange: () => Promise<void>) {
     gitChanged = false
     // Only worth a re-read if git sees one of them (node_modules, dist, … don't count).
     const ignored = paths.length ? new Set((await git(root, ['check-ignore', '-z', '--stdin'], paths.join('\0') + '\0')).split('\0')) : new Set()
-    if (!wasGit && paths.every((p) => ignored.has(p))) return
+    const seen = paths.filter((p) => !ignored.has(p))
+    if (!wasGit && !seen.length) return
     running = true
     try {
-      await onChange()
+      await onChange(seen)
     } catch (e) {
       console.error(`deltaviz: ${(e as Error).message}`)
     } finally {

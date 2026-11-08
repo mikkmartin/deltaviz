@@ -54,4 +54,6 @@ export interface Graph {
   packageBytes?: Record<string, number>
   /** PROTOTYPE: what the code's imports of each package add to a bundle: just what it imports, tree-shaken and minified (its own deps included) */
   packageBundle?: Record<string, { bytes: number; gzip: number }>
+  /** PROTOTYPE: with the package.json section drawn, the root package.json: the section's header shows its changes (it isn't a cell of its own) */
+  pkgJson?: GraphNode
 }

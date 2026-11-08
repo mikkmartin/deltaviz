@@ -28,7 +28,7 @@
   },
   "scripts": {
     "build": "node build.ts",
-    "dev": "node build.ts && node dist/cli.js",
+    "dev": "node build.ts --watch",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run typecheck && npm run build"
   },

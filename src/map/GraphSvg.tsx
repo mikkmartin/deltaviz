@@ -2,7 +2,7 @@
 import { useMemo } from 'react'
 import { NODE_H, NODE_W, type Layout, type Placed } from './layout.js'
 import type { Pointer } from './pointer.js'
-import { amber, green, red, gray } from '../palette.js'
+import { amber, gray, green, MONO, red } from '../palette.js'
 import { T } from './theme.js'
 
 /** The change colours, as the Tree's (theme.ts), for the Map, Summary and diff icons */
@@ -83,7 +83,7 @@ export function GraphSvg(props: Pick<Pointer, 'hover' | 'onHover'> & { layout: L
       {L.clusters.map((c) => (
         <g key={c.name} onClick={() => extra.onCluster?.(c.name)} style={{ cursor: extra.onCluster ? 'pointer' : undefined }}>
           <rect x={c.x} y={c.y} width={c.w} height={c.h} rx={10} fill={gray[900]} stroke={gray[800]} />
-          <text x={c.x + 16} y={c.y + 20} fill={gray[500]} fontSize={11} fontWeight={600}>
+          <text x={c.x + 16} y={c.y + 20} fill={gray[500]} fontSize={11}>
             {extra.clusterLabel ? extra.clusterLabel(c.name) : c.name}
           </text>
         </g>
@@ -131,13 +131,12 @@ export function GraphSvg(props: Pick<Pointer, 'hover' | 'onHover'> & { layout: L
               y={NODE_H / 2 + 4}
               fill={pill ? gray[400] : n.status === 'same' ? gray[400] : gray[200]}
               fontSize={11}
-              fontWeight={folder ? 600 : 400}
-              fontFamily="ui-monospace, monospace"
+              fontFamily={MONO}
             >
               {label.length > room ? '…' + label.slice(-(room - 1)) : label}
             </text>
             {note && (
-              <text x={NODE_W - 8} y={NODE_H / 2 + 4} textAnchor="end" fill={gray[500]} fontSize={10} fontFamily="ui-monospace, monospace">
+              <text x={NODE_W - 8} y={NODE_H / 2 + 4} textAnchor="end" fill={gray[500]} fontSize={10} fontFamily={MONO}>
                 {note}
               </text>
             )}

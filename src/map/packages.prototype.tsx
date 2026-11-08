@@ -46,8 +46,12 @@ export const PKG_DARKEN = 0.6
 /** …and outlined brighter than the code, so its dark cells still read */
 export const PKG_STROKE = 0.35
 
-/** The installed packages' folder, titled after where they're declared */
-export const PKG_DIR = 'package.json'
+/**
+ * The installed packages' folder: an id no file has (the root package.json is a file in
+ * the tree too), shown titled after where they're declared.
+ */
+export const PKG_DIR = ':packages'
+export const PKG_DIR_NAME = 'package.json'
 /**
  * A package's area: the square root of its bundle size, from 1 KB up (see
  * docs/research/treemap-scaling.md). Bundle sizes span 4+ orders of magnitude; linear, the small
@@ -79,7 +83,10 @@ export function withPackageFolder(g: Graph): Graph {
   })
   const kind = new Map(uses.map((u) => [u.name, u.kind]))
   const edges = (g.packages ?? []).map((e) => ({ source: e.source, target: `${PKG_DIR}/${KIND_NAME[kind.get(e.target)!]}/${e.target}`, status: e.status }))
-  return { ...g, nodes: [...g.nodes, ...nodes], edges: [...g.edges, ...edges] }
+  // The root package.json is the section itself: its header shows the file's changes.
+  const pkgJson = g.nodes.find((n) => n.id === PKG_DIR_NAME)
+  const own = g.nodes.filter((n) => n !== pkgJson)
+  return { ...g, nodes: [...own, ...nodes], edges: [...g.edges, ...edges], pkgJson }
 }
 
 /**
