@@ -1,6 +1,6 @@
 {
   "name": "deltaviz",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A live treemap of a git repo's codebase, with the branch's changes highlighted",
   "license": "MIT",
   "author": "Mikk Martin",
