@@ -32,7 +32,7 @@
     "dev": "node build.ts --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./test/ts-resolve.ts --test test/*.test.ts",
-    "prepublishOnly": "npm run typecheck && npm run build"
+    "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {
     "@types/d3-hierarchy": "^3.1.7",
@@ -45,5 +45,6 @@
     "react-dom": "^19.1.0",
     "sugar-high": "^2.6.4",
     "typescript": "^5.8.0"
-  }
+  },
+  "packageManager": "pnpm@10.26.2"
 }
