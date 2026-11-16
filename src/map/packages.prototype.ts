@@ -3,7 +3,7 @@
  * section on the right of the code, a folder per kind (dependencies, devDependencies, …), each
  * package sized by what the code's imports of it add to a bundle. Not for main.
  */
-import { treemapSquarify, type HierarchyRectangularNode } from 'd3-hierarchy'
+import type { HierarchyRectangularNode } from 'd3-hierarchy'
 import type { Graph, GraphNode, PackageEdge, PackageKind } from './model.js'
 import type { TreeNode } from './tree.js'
 
@@ -97,17 +97,20 @@ const SPLIT_SHARE = 0.2
 /** Between the code and the packages, on top of the treemap's own gap (3px) */
 export const SPLIT_GAP = 0
 
+/** Squarifies a node's children in a box; `key` names the node (its code, beside packages, has its own) */
+type Squarify = (key: string, node: HierarchyRectangularNode<TreeNode>, x0: number, y0: number, x1: number, y1: number) => void
+
 /**
  * A treemap tiling that, at the top, puts `package.json` in a column on the right
  * (SPLIT_SHARE of the width) and
- * squarifies the rest in what's left; below the top, squarified as usual.
+ * squarifies the rest in what's left (with `squarify`); below the top, squarified as usual.
  */
-export function splitTile(node: HierarchyRectangularNode<TreeNode>, x0: number, y0: number, x1: number, y1: number) {
+export const splitTile = (squarify: Squarify) => (node: HierarchyRectangularNode<TreeNode>, x0: number, y0: number, x1: number, y1: number) => {
   const pk = node.depth === 0 ? node.children?.find((c) => c.data.id === PKG_DIR) : undefined
-  if (!pk) return treemapSquarify(node, x0, y0, x1, y1)
+  if (!pk) return squarify(node.data.id, node, x0, y0, x1, y1)
   const rest = node.children!.filter((c) => c !== pk)
   const xs = x1 - (x1 - x0) * SPLIT_SHARE
   const left = { children: rest, value: rest.reduce((a, c) => a + (c.value ?? 0), 0) } as unknown as HierarchyRectangularNode<TreeNode>
-  if (rest.length) treemapSquarify(left, x0, y0, xs - SPLIT_GAP / 2, y1)
+  if (rest.length) squarify(`${node.data.id}\n${PKG_DIR}`, left, x0, y0, xs - SPLIT_GAP / 2, y1)
   Object.assign(pk, { x0: xs + SPLIT_GAP / 2, y0, x1, y1 })
 }

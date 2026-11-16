@@ -40,12 +40,16 @@ body { font: 13px/1.4 ${MONO}; word-spacing: -0.25em; color: ${gray[200]}; color
 .arch { display: flex; height: 100vh; padding: 0 14px 0 8px; }
 .arch.sb-closed .arch-main { padding-left: 6px; }
 .arch-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 0; }
-.arch-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+/* Always one row: short of room, the stats and then the path's outer folders give way (cut short with …), never the controls. */
+.arch-bar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; white-space: nowrap; min-width: 0; font-size: 12px; }
+.arch-bar > * { flex: none; }
+.arch-bar > .lm-muted { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .arch-bar b { color: ${gray[200]}; }
-.arch-grow { flex: 1; }
+.arch-bar > .arch-grow { flex: 1 1 0; min-width: 0; }
 .arch-seg { display: inline-flex; border: 1px solid ${gray[700]}; border-radius: 6px; overflow: hidden; }
-.arch-seg button { all: unset; cursor: pointer; padding: 3px 12px; font-size: 12px; color: ${gray[400]}; }
-.arch-seg button.on { background: ${gray[700]}; color: ${gray[200]}; }
+.arch-bar > .arch-seg { flex: 0 1 auto; min-width: 0; }
+.arch-seg button { all: unset; cursor: pointer; padding: 3px 12px; font-size: 12px; color: ${gray[400]}; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.arch-seg button.on { flex: none; background: ${gray[700]}; color: ${gray[200]}; }
 .arch-map { flex: 1; min-height: 200px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .arch-map svg { display: block; }
 .lm-icon-btn { all: unset; cursor: pointer; width: 22px; height: 22px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: ${gray[400]}; flex: none; }

@@ -1,8 +1,6 @@
 import { execFile } from 'node:child_process'
-import path from 'node:path'
 import { branchBase } from './base.js'
 import { parse, type Mode, type State } from './diff.js'
-import { addedLines, readRegular } from './files.js'
 
 /**
  * A checkout's changes for the switcher, read-only: uncommitted (working tree
@@ -80,41 +78,5 @@ export async function changes(dir: string, mode: Mode, configured?: unknown): Pr
     return { ok: true, mode, base: against.label, files: parse(text), truncated }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
-  }
-}
-
-export interface Stats {
-  added: number
-  removed: number
-}
-
-/** Untracked files bigger than this aren't counted (generated, or not text). */
-const MAX_COUNTED = 1_000_000
-
-/**
- * Lines changed on the branch, uncommitted and untracked files included: the
- * Branch tab's totals without reading the diff itself. For every row of the
- * switcher, so one `git diff --numstat` plus a read of each untracked file.
- */
-export async function stats(dir: string, configured?: unknown): Promise<Stats | null> {
-  try {
-    const against = await base(dir, 'branch', configured)
-    const [numstat, listing] = await Promise.all([
-      git(dir, ['diff', '--numstat', '--no-renames', against.ref, '--']),
-      git(dir, ['ls-files', '--others', '--exclude-standard', '-z']),
-    ])
-    const out = { added: 0, removed: 0 }
-    for (const line of numstat.split('\n')) {
-      const [a, r] = line.split('\t')
-      // Binary files are "-\t-".
-      if (r !== undefined) (out.added += Number(a) || 0), (out.removed += Number(r) || 0)
-    }
-    for (const file of listing.split('\0').filter(Boolean).slice(0, MAX_UNTRACKED)) {
-      const text = readRegular(path.join(dir, file), MAX_COUNTED)
-      if (text && !text.subarray(0, 8000).includes(0)) out.added += addedLines(text.toString('utf8')) // NUL: binary
-    }
-    return out
-  } catch {
-    return null
   }
 }
