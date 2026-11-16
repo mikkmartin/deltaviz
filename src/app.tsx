@@ -5,7 +5,7 @@ import { useKept } from './kept.js'
 import { DiffModal } from './map/DiffModal.js'
 import { MapView } from './map/MapView.js'
 import { isPkgCell, withPackageFolder } from './map/packages.prototype.js'
-import type { GraphResponse } from './map/read.js'
+import type { GraphResponse, PackageSizes } from './map/read.js'
 import { Summary, SUMMARY_CSS } from './map/Summary.js'
 import { SHEET_CSS } from './sheet.js'
 import { SWITCH_CSS } from './switch.js'
@@ -90,6 +90,8 @@ async function get<T>(url: string): Promise<T> {
 function App() {
   const [mode, setMode] = useKept<Mode>('mode', 'branch', true)
   const [data, setData] = useState<GraphResponse>()
+  /** The packages' sizes: read apart from the graph (they take seconds, it doesn't wait); the last ones stay till the next are in */
+  const [sizes, setSizes] = useState<PackageSizes>()
   const [diff, setDiff] = useState<State>()
   const [error, setError] = useState('')
   const [mapRef, canvas] = useSize()
@@ -136,6 +138,11 @@ function App() {
    */
   const load = useCallback(() => {
     const id = ++latest.current
+    // Unsized (as without esbuild) if they can't be read: the packages still show.
+    get<PackageSizes>(`/sizes?mode=${mode}`).then(
+      (s) => id === latest.current && setSizes(s),
+      () => id === latest.current && setSizes((s) => s ?? { packageBundle: {}, packageBytes: {} }),
+    )
     return Promise.allSettled([get<GraphResponse>(`/graph?mode=${mode}`), get<State>(`/diff?mode=${mode}`)]).then(([g, d]) => {
       if (id !== latest.current) return false
       if (g.status === 'fulfilled') {
@@ -186,11 +193,13 @@ function App() {
   const devChanged = useMemo(() => !!data?.packages?.some((e) => e.kind === 'dev' && e.status !== 'same') || !!data?.declaredChanged?.dev, [data])
   const [ownShowDev, setShowDev] = useState<boolean | null>(null)
   const showDev = ownShowDev ?? devChanged
+  // Drawn once their sizes are in (their areas): till then the code alone, as with packages off.
+  const pkgSizes = showPkgs ? sizes : undefined
   const treeData = useMemo(() => {
     if (!data) return data
     const shown = showDev ? data : { ...data, packages: data.packages?.filter((e) => e.kind !== 'dev') }
-    return showPkgs ? withPackageFolder(shown) : shown
-  }, [data, showPkgs, showDev])
+    return pkgSizes ? withPackageFolder({ ...shown, ...pkgSizes }) : shown
+  }, [data, pkgSizes, showDev])
   const tree = useMemo(() => treeData && buildTree(treeData), [treeData])
   const openFile = useCallback((id: string) => setOpened(isPkgCell(id) ? 'package.json' : id), [])
 
@@ -208,8 +217,8 @@ function App() {
           {treeData && tree && canvas.width > 0 && (
             <MapView
               data={treeData}
-              showPackages={showPkgs}
-              onShowPackages={setShowPkgs}
+              packages={!showPkgs ? 'off' : pkgSizes ? 'on' : 'sizing'}
+              onPackages={setShowPkgs}
               showDev={showDev}
               onShowDev={setShowDev}
               root={tree.root}

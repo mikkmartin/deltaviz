@@ -11,6 +11,8 @@ export type { Graph, GraphEdge, GraphNode, Status }
 export interface Snapshot {
   files: string[]
   read(file: string): string
+  /** A file's scan, when the caller keeps them (across reads): then only package.jsons are `read`. Else scanned from `read`. */
+  scan?(file: string): FileScan
 }
 
 export interface Numstat {
@@ -92,8 +94,19 @@ export function parsePackageJson(file: string, text: string): Pkg | null {
 const EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte']
 const STYLE_EXTS = ['.scss', '.sass', '.css', '.less']
 
+/** The package.jsons a file is under, nearest first: the same for every file of a folder, so kept per folder. */
+function packageOwners(pkgs: Pkg[]): (file: string) => Pkg[] {
+  const byFolder = new Map<string, Pkg[]>()
+  return (file) => {
+    const dir = file.slice(0, file.lastIndexOf('/') + 1)
+    let owners = byFolder.get(dir)
+    if (!owners) byFolder.set(dir, (owners = pkgs.filter((p) => p.dir === '' || file.startsWith(p.dir + '/')).sort((a, b) => b.dir.length - a.dir.length)))
+    return owners
+  }
+}
+
 /** Resolves import specifiers to files of one snapshot. */
-export function makeResolver(files: Set<string>, pkgs: Pkg[]) {
+export function makeResolver(files: Set<string>, pkgs: Pkg[], ownersOf = packageOwners(pkgs)) {
   const join = (...parts: string[]) => path.posix.normalize(path.posix.join(...parts)).replace(/^\.\//, '')
   const tryFile = (p: string): string | undefined => {
     if (p.startsWith('..')) return undefined
@@ -114,8 +127,7 @@ export function makeResolver(files: Set<string>, pkgs: Pkg[]) {
     return tryFile(t.replace(/(^|\/)(?:dist|build|lib)\//, '$1src/')) ?? tryFile(t)
   }
   const byName = new Map(pkgs.filter((p) => p.name).map((p) => [p.name, p]))
-  const owner = (file: string) =>
-    pkgs.filter((p) => p.dir === '' || file.startsWith(p.dir + '/')).sort((a, b) => b.dir.length - a.dir.length)[0]
+  const owner = (file: string) => ownersOf(file)[0]
 
   return (from: string, spec: string): string | undefined => {
     // In stylesheets a bare `@import 'vars'` is relative too.
@@ -159,6 +171,15 @@ interface FileStats {
   length: number
 }
 
+/** All the graph takes from a file's text: its sizes, and (a source file's) import specifiers */
+export interface FileScan extends FileStats {
+  imports: string[]
+}
+
+export function scanFile(file: string, src: string): FileScan {
+  return { lines: countLines(src), bytes: Buffer.byteLength(src), length: src ? src.replace(/\n$/, '').split('\n').length : 0, imports: isSource(file) ? parseImports(src) : [] }
+}
+
 /** PROTOTYPE: the npm package a specifier the repo can't resolve names, if any */
 function packageOf(from: string, spec: string, own: Set<string>): string | undefined {
   if (/^(?:\.|\/|[@~]\/)/.test(spec)) return undefined
@@ -170,18 +191,28 @@ function packageOf(from: string, spec: string, own: Set<string>): string | undef
 }
 const BUILTINS = new Set(['fs', 'path', 'os', 'url', 'http', 'https', 'net', 'child_process', 'crypto', 'stream', 'events', 'util', 'assert', 'zlib', 'buffer', 'readline', 'worker_threads', 'module', 'process', 'tty', 'dns', 'querystring', 'perf_hooks', 'timers', 'v8', 'vm'])
 
-function edgesOf(snap: Snapshot): { files: Set<string>; edges: Set<string>; packages: Set<string>; kinds: Map<string, PackageKind>; stats: Map<string, FileStats>; declared: Record<'dep' | 'dev', string> } {
+/** One side of the diff, read: its files, their sizes and what they import */
+export interface Side {
+  files: Set<string>
+  edges: Set<string>
+  packages: Set<string>
+  kinds: Map<string, PackageKind>
+  stats: Map<string, FileStats>
+  declared: Record<'dep' | 'dev', string>
+}
+
+export function sideOf(snap: Snapshot): Side {
   const files = new Set(snap.files.filter(isGraphFile))
   const pkgs = snap.files
     .filter(isPackageJson)
     .map((f) => parsePackageJson(f, snap.read(f)))
     .filter((p): p is Pkg => !!p)
-  const resolve = makeResolver(files, pkgs)
   const own = new Set(pkgs.map((p) => p.name).filter(Boolean))
   const packages = new Set<string>()
   const kinds = new Map<string, PackageKind>()
-  // The package.jsons a file is under, nearest first: a dependency listed further up still counts (hoisted).
-  const owners = (f: string) => pkgs.filter((p) => p.dir === '' || f.startsWith(p.dir + '/')).sort((a, b) => b.dir.length - a.dir.length)
+  // The package.jsons a file is under: a dependency listed further up still counts (hoisted).
+  const owners = packageOwners(pkgs)
+  const resolve = makeResolver(files, pkgs, owners)
   const kindOf = (f: string, name: string): PackageKind => {
     if (name === 'node') return 'builtin'
     const os = owners(f)
@@ -190,10 +221,9 @@ function edgesOf(snap: Snapshot): { files: Set<string>; edges: Set<string>; pack
   const edges = new Set<string>()
   const stats = new Map<string, FileStats>()
   for (const f of files) {
-    const src = snap.read(f)
-    stats.set(f, { lines: countLines(src), bytes: Buffer.byteLength(src), length: src ? src.replace(/\n$/, '').split('\n').length : 0 })
-    if (!isSource(f)) continue
-    for (const spec of parseImports(src)) {
+    const { imports, ...sizes } = snap.scan?.(f) ?? scanFile(f, snap.read(f))
+    stats.set(f, sizes)
+    for (const spec of imports) {
       const t = resolve(f, spec)
       if (t && t !== f) edges.add(`${f}\n${t}`)
       const p = t ? undefined : packageOf(f, spec, own)
@@ -223,11 +253,12 @@ export function clusterer(files: string[], pkgDirs: string[]): (file: string) =>
   }
 }
 
-export function diffGraph(base: Snapshot | null, head: Snapshot, numstat: Numstat): Graph {
-  const B = edgesOf(head)
-  const A = base ? edgesOf(base) : { files: new Set<string>(), edges: new Set<string>(), packages: new Set<string>(), kinds: new Map<string, PackageKind>(), stats: new Map<string, FileStats>(), declared: B.declared }
+/** `base` and `head`: each side as `sideOf` read it (a caller may keep a side it has read) */
+export function diffGraph(base: Side | null, head: Side, numstat: Numstat): Graph {
+  const B = head
+  const A = base ?? { files: new Set<string>(), edges: new Set<string>(), packages: new Set<string>(), kinds: new Map<string, PackageKind>(), stats: new Map<string, FileStats>(), declared: B.declared }
   const all = [...new Set([...A.files, ...B.files])].sort()
-  const pkgDirs = [...new Set([...(base?.files ?? []), ...head.files])]
+  const pkgDirs = [...new Set([...A.files, ...B.files])]
     .filter((f) => f === 'package.json' || f.endsWith('/package.json'))
     .map((f) => (f === 'package.json' ? '' : path.posix.dirname(f)))
   const cluster = clusterer(all, pkgDirs)
@@ -269,11 +300,13 @@ export function diffGraph(base: Snapshot | null, head: Snapshot, numstat: Numsta
     const [source, target] = e.split('\n')
     return { source, target, status: !baseEdges.has(e) ? 'added' : !B.edges.has(e) ? 'removed' : 'same' }
   })
-  const basePkgs = new Set([...A.packages].map((e) => { const [f, p] = e.split('\n'); return `${moved(f)}\n${p}` }))
+  const movedPkg = (e: string) => { const [f, p] = e.split('\n'); return `${moved(f)}\n${p}` }
+  const basePkgs = new Set([...A.packages].map(movedPkg))
+  const baseKinds = new Map([...A.kinds].map(([e, kind]) => [movedPkg(e), kind]))
   const packages = [...new Set([...basePkgs, ...B.packages])].map((e) => {
     const [source, target] = e.split('\n')
     const status = !basePkgs.has(e) ? 'added' : !B.packages.has(e) ? 'removed' : 'same'
-    const kind = B.kinds.get(e) ?? [...A.kinds].find(([k]) => { const [f, p] = k.split('\n'); return `${moved(f)}\n${p}` === e })?.[1] ?? 'undeclared'
+    const kind = B.kinds.get(e) ?? baseKinds.get(e) ?? 'undeclared'
     return { source, target, status, kind } as const
   })
   const declaredChanged = { dep: A.declared.dep !== B.declared.dep, dev: A.declared.dev !== B.declared.dev }

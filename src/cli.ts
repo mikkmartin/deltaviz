@@ -80,30 +80,39 @@ const opts = args(process.argv.slice(2))
 const cwd = path.resolve(opts.dir)
 if (!fs.existsSync(cwd)) die(`no such folder: ${cwd}`)
 const root = await git(cwd, ['rev-parse', '--show-toplevel']).catch(() => die(`not inside a git repository: ${cwd}`))
+const [prefix, common, own] = await Promise.all([git(cwd, ['rev-parse', '--show-prefix']), git(root, ['rev-parse', '--git-common-dir']), git(root, ['rev-parse', '--git-dir'])])
 /** Where it was run, relative to the repo: the folder the Tree opens zoomed into */
-const start = (await git(cwd, ['rev-parse', '--show-prefix'])).replace(/\/$/, '')
-const commonDir = path.resolve(root, await git(root, ['rev-parse', '--git-common-dir']))
+const start = prefix.replace(/\/$/, '')
+const commonDir = path.resolve(root, common)
 /**
  * The project: the main checkout's folder, also from a linked worktree. Only when the shared
  * git dir is a checkout's `.git`: a submodule's (`.git/modules/x`) or a moved one says nothing, so its own folder.
  */
 const name = path.basename(commonDir) === '.git' ? path.basename(path.dirname(commonDir)) : path.basename(root)
 /** A linked worktree's folder, else null */
-const worktree = path.resolve(root, await git(root, ['rev-parse', '--git-dir'])) === commonDir ? null : path.basename(root)
+const worktree = path.resolve(root, own) === commonDir ? null : path.basename(root)
 
-/** Each mode's last read, as sent; dropped when something changes */
-type Reads = { graph: Promise<string>; diff: Promise<string> }
+/**
+ * Each mode's last read, as sent; dropped when something changes. `sizes` (the packages') comes
+ * after the graph, on its own: it takes seconds, and the page shows the graph meanwhile.
+ */
+type Reads = { graph: Promise<string>; diff: Promise<string>; sizes: Promise<string> }
 const cache = new Map<Mode, Reads>()
 const read = (mode: Mode): Reads => {
   let r = cache.get(mode)
   if (!r) {
+    const read = readGraph(root, opts.base, mode)
     r = {
-      graph: readGraph(root, opts.base, mode).then((g) => JSON.stringify(g)),
+      graph: read.then((g) => JSON.stringify(g.graph)),
       diff: changes(root, mode, opts.base).then((s) => JSON.stringify(s)),
+      // Started with the graph: the page asks for them right after.
+      sizes: read.then((g) => g.sizes()).then((s) => JSON.stringify(s)),
     }
     cache.set(mode, r)
-    // A failed read isn't kept: the next request tries again.
+    // A failed read isn't kept: the next request tries again. (Sizes fail only with the graph.)
     Promise.all([r.graph, r.diff]).catch(() => cache.get(mode) === r && cache.delete(mode))
+    // Nobody may ask for them: a failure isn't unhandled.
+    r.sizes.catch(() => {})
   }
   return r
 }
@@ -111,9 +120,14 @@ const read = (mode: Mode): Reads => {
 const clients = new Set<http.ServerResponse>()
 const settled = (p: Promise<string>) => p.catch((e: Error) => `!${e.message}`)
 
+const broadcast = (msg: string) => {
+  for (const c of clients) c.write(msg)
+}
+
 /**
  * Re-reads what the pages show, then tells them which files were touched (to flash)
- * and whether any of what they show changed (to re-read).
+ * and whether any of what they show changed (to re-read). Not the packages' sizes: they
+ * come seconds later, and change only with what's imported, which changes the diff too.
  */
 async function changed(paths: string[]) {
   const before = new Map([...cache].map(([m, r]) => [m, Promise.all([settled(r.graph), settled(r.diff)])]))
@@ -125,8 +139,7 @@ async function changed(paths: string[]) {
     if (a !== (await settled(r.graph)) || b !== (await settled(r.diff))) differs = true
   }
   if (!differs && !paths.length) return
-  const msg = `data: ${JSON.stringify({ changed: differs, paths })}\n\n`
-  for (const c of clients) c.write(msg)
+  broadcast(`data: ${JSON.stringify({ changed: differs, paths })}\n\n`)
 }
 
 const html = `<!doctype html>
@@ -189,6 +202,8 @@ const server = http.createServer((req, res) => {
       return json(res, read(mode).graph)
     case '/diff':
       return json(res, read(mode).diff)
+    case '/sizes':
+      return json(res, read(mode).sizes)
     case '/file':
       return json(res, readSource(root, url.searchParams.get('path') ?? '').then((f) => JSON.stringify(f)))
     case '/events':
@@ -228,7 +243,7 @@ if (DEV) {
     if (f !== 'app.js') return
     clearTimeout(t)
     t = setTimeout(() => {
-      for (const c of clients) c.write('event: reload\ndata:\n\n')
+      broadcast('event: reload\ndata:\n\n')
     }, 100)
   })
 }
