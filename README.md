@@ -24,11 +24,24 @@ Needs Node 24 and git.
 ## Develop
 
 ```sh
-npm install
-npm run dev           # serve this repo; rebuilds and reloads the page on save
+pnpm install
+pnpm dev              # serve this repo; rebuilds and reloads the page on save
+pnpm typecheck && pnpm test
 ```
 
-To use this checkout globally, run `npm run build && npm link`, then run `dv` from
-any project directory. Run `npm run build` again after changing the source.
+To use this checkout globally, run `pnpm build && pnpm link --global`, then run `dv` from
+any project directory. Run `pnpm build` again after changing the source.
+
+## Release
+
+On `main`, with a clean tree:
+
+```sh
+npm version patch     # or minor / major: bumps package.json, commits, tags vX.Y.Z
+git push --follow-tags
+```
+
+The tag runs [`release.yml`](.github/workflows/release.yml): checks, `npm publish` (trusted
+publishing, with provenance), and a GitHub Release with generated notes.
 
 MIT
