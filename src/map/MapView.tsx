@@ -77,15 +77,18 @@ export function MapView(
     restore: boolean
     /** The folder to open zoomed into (where the CLI was run), else the first one with more than one child */
     startId?: string
-    /** PROTOTYPE: whether the installed packages are drawn (the switch in the bar) */
-    showPackages?: boolean
-    onShowPackages?: (on: boolean) => void
+    /** PROTOTYPE: the installed packages: off, asked for (the switch in the bar) but their sizes not read yet, or drawn */
+    packages?: 'off' | 'sizing' | 'on'
+    /** The switch: packages asked for, or not */
+    onPackages?: (on: boolean) => void
     /** PROTOTYPE: whether devDependencies are among them */
     showDev?: boolean
     onShowDev?: (on: boolean) => void
   },
 ) {
   const { data, root, byId, width, height, mini, onHover: setHover } = props
+  const showPackages = props.packages === 'on'
+  const wantPackages = !!props.packages && props.packages !== 'off'
   // A folder in the address (?in=src/map: zoomed into, from a link or Back/Forward) wins over the kept one.
   // One that isn't in the Tree (a stale link, another mode) is ignored.
   const [inUrl] = useState(() => {
@@ -237,24 +240,24 @@ export function MapView(
   useLayoutEffect(() => setFlight(null), [W, H])
   // PROTOTYPE: toggling packages zooms too: the code, alone, to (or from) where it sits beside them.
   const shownView = useRef(view)
-  const hadPkgs = useRef(props.showPackages)
+  const hadPkgs = useRef(showPackages)
   useLayoutEffect(() => {
     const [was, had] = [shownView.current, hadPkgs.current]
     shownView.current = view
-    hadPkgs.current = props.showPackages
+    hadPkgs.current = showPackages
     // Mid-zoom, the zoom carries on (drawing the view as it is now) rather than jumping.
-    if (had === props.showPackages || was === view || still() || flightRef.current) return
+    if (had === showPackages || was === view || still() || flightRef.current) return
     // Where the code sits in the view with packages: left of them, at the top.
-    const withPkgs = props.showPackages ? view : was
+    const withPkgs = showPackages ? view : was
     const code = withPkgs.laid.children?.filter((c) => !isPkgCell(c.data.id))
     if (!code?.length || code.length === withPkgs.laid.children?.length) return
     const box = { x0: Math.min(...code.map((c) => c.x0)), y0: Math.min(...code.map((c) => c.y0)), x1: Math.max(...code.map((c) => c.x1)), y1: Math.max(...code.map((c) => c.y1)) }
-    const [outer, inner] = [{ key: keys.current++, layout: withPkgs, box: full(W, H), parent: null }, { key: keys.current++, layout: props.showPackages ? was : view, box, parent: full(W, H) }]
+    const [outer, inner] = [{ key: keys.current++, layout: withPkgs, box: full(W, H), parent: null }, { key: keys.current++, layout: showPackages ? was : view, box, parent: full(W, H) }]
     // Out to the packages: from the code's box to the whole; back: the reverse.
-    const [from, to] = props.showPackages ? [inner, outer] : [outer, inner]
+    const [from, to] = showPackages ? [inner, outer] : [outer, inner]
     spring.current = { from: from.box, to: to.box, t: 0, v: 0 }
     setFlight({ views: [outer, inner], target: to.key })
-  }, [view, props.showPackages])
+  }, [view, showPackages])
   const shown = flight
   // Each frame: the spring on, each view placed where the camera sees it (no re-render), until it rests.
   const ghosts = useRef(new Map<number, SVGGElement>())
@@ -290,7 +293,7 @@ export function MapView(
   }, [shown, W, H])
 
   // PROTOTYPE: who imports the hovered package (or folder of them), outlined.
-  const uses = useMemo(() => (props.showPackages ? packageUses(data) : []), [data, props.showPackages])
+  const uses = useMemo(() => (showPackages ? packageUses(data) : []), [data, showPackages])
   const hoveredPkgs = useMemo(() => {
     if (hover === null || !isPkgCell(hover)) return []
     return uses.filter((u) => pkgCellId(u) === hover || pkgCellId(u).startsWith(hover + '/')).map((u) => u.name)
@@ -381,14 +384,19 @@ export function MapView(
           {fmt(view.top.lines)} lines · {view.top.files} files{view.top.changed ? ` · ${view.top.changed} changed` : ''} · hover: <span style={{ color: T.importOut }}>imports</span> /{' '}
           <span style={{ color: T.importIn }}>imported by</span>
           {/* PROTOTYPE: the package.json section's key: its areas aren't linear, its labels are real. */}
-          {props.showPackages && <span title="A package's area is the square root of its bundle size (from 1 KB); its label is the real size"> · packages ∝ √size</span>}
+          {showPackages && <span title="A package's area is the square root of its bundle size (from 1 KB); its label is the real size"> · packages ∝ √size</span>}
         </span>}
         <span className="arch-grow" />
         {!mini && (
-          <Switch label="packages" title="Show the installed packages the code imports (on by default when this branch changes which it imports)" checked={!!props.showPackages} onToggle={() => props.onShowPackages?.(!props.showPackages)} />
+          <Switch
+            label={props.packages === 'sizing' ? 'packages (sizing…)' : 'packages'}
+            title="Show the installed packages the code imports (on by default when this branch changes which it imports)"
+            checked={wantPackages}
+            onToggle={() => props.onPackages?.(!wantPackages)}
+          />
         )}
         {!mini && (
-          <Switch label="devDependencies" title="Include devDependencies among the packages (on by default when this branch changes which it imports)" disabled={!props.showPackages} checked={!!props.showDev} onToggle={() => props.onShowDev?.(!props.showDev)} />
+          <Switch label="devDependencies" title="Include devDependencies among the packages (on by default when this branch changes which it imports)" disabled={!wantPackages} checked={!!props.showDev} onToggle={() => props.onShowDev?.(!props.showDev)} />
         )}
         {!mini && (
           <Switch label="show folder dependencies on hover" title="Draw a folder's imports when hovering it" checked={folderLinks} onToggle={() => setFolderLinks(!folderLinks)} />
