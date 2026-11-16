@@ -2,7 +2,7 @@
 
 A live treemap of a git repo: the whole codebase sized by lines, the branch's changes coloured in, imports on hover. It updates as you edit.
 
-![deltaviz: hovering files draws their imports; clicking a folder zooms in](https://raw.githubusercontent.com/mikkmartin/deltaviz/main/assets/demo.gif)
+![deltaviz: an agent edits and each save lights up; hover shows imports; click a folder to zoom, a file for its diff](https://raw.githubusercontent.com/mikkmartin/deltaviz/main/assets/demo.gif)
 
 ```sh
 npx deltaviz          # in any folder of a git repo
@@ -33,6 +33,8 @@ pnpm typecheck && pnpm test
 
 To use this checkout globally, run `pnpm build && pnpm link --global`, then run `dv` from
 any project directory. Run `pnpm build` again after changing the source.
+
+To re-record the demo GIF (needs Chrome and ffmpeg): `pnpm build && pnpm --dir scripts/demo install && node scripts/demo/record.ts assets/demo.mp4`, then keep `assets/demo.gif`.
 
 ## Release
 
