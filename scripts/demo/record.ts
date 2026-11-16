@@ -26,6 +26,11 @@ const frames = path.join(tmp, 'frames')
 fs.mkdirSync(frames)
 const git = (...a: string[]) => execFileSync('git', a, { cwd: REPO, stdio: 'pipe' }).toString().trim()
 
+// A run killed before its cleanup leaves the worktree and branch behind: clear them first.
+git('worktree', 'prune')
+try {
+  git('branch', '-D', BRANCH)
+} catch {}
 git('worktree', 'add', '-q', '-b', BRANCH, wt, 'origin/main')
 const server = spawn(process.execPath, [path.join(REPO, 'dist/cli.js'), wt, '--no-open', '--port', String(PORT)], { stdio: 'ignore' })
 const cleanup = () => {
