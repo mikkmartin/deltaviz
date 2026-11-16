@@ -13,8 +13,3 @@ export function readRegular(file: string, max: number): Buffer | null {
     return null // gone meanwhile
   }
 }
-
-/** Lines a new file adds in a diff: the final newline ends the last line, an empty file adds none. */
-export function addedLines(text: string): number {
-  return text ? text.replace(/\n$/, '').split('\n').length : 0
-}

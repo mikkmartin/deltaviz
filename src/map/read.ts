@@ -1,10 +1,15 @@
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
+import { gzip } from 'node:zlib'
 import { branchBase } from '../base.js'
-import { addedLines, readRegular } from '../files.js'
+import { readRegular } from '../files.js'
 import type { Mode } from '../diff.js'
-import { diffGraph, isGraphFile, isSource, parseNumstat, type Graph, type Numstat, type Snapshot } from './graph.js'
+import { diffGraph, sideOf, isGraphFile, isSource, parseNumstat, scanFile, type FileScan, type Graph, type Numstat, type Side } from './graph.js'
+import type { PackageEdge } from './model.js'
 
 /**
  * The Map tab: the module graph of a checkout, diffed against where its branch left
@@ -16,7 +21,7 @@ export interface GraphResponse extends Graph {
   baseRef: string | null
   baseSha: string | null
   branch: string | null
-  /** Ncommitted files among the changes */
+  /** Uncommitted files among the changes */
   dirty: number
 }
 
@@ -39,8 +44,9 @@ function git(cwd: string, args: string[]): Promise<string> {
 /** Records of a `-z` listing */
 const records = (s: string) => s.split('\0').filter(Boolean)
 
-/** Contents of many blobs from one `git cat-file --batch`. */
-function readBlobs(cwd: string, rev: string, files: string[]): Promise<Map<string, string>> {
+/** Contents of many blobs, by object id, from one `git cat-file --batch`; ones over MAX_BYTES (or missing) are left out. */
+function readBlobs(cwd: string, oids: string[]): Promise<Map<string, string>> {
+  if (!oids.length) return Promise.resolve(new Map())
   return new Promise((resolve, reject) => {
     const proc = spawn('git', ['cat-file', '--batch'], { cwd })
     const chunks: Buffer[] = []
@@ -51,68 +57,237 @@ function readBlobs(cwd: string, rev: string, files: string[]): Promise<Map<strin
       const buf = Buffer.concat(chunks)
       const out = new Map<string, string>()
       let at = 0
-      for (const file of files) {
+      for (const oid of oids) {
         const nl = buf.indexOf(10, at)
         const header = buf.toString('utf8', at, nl)
         at = nl + 1
         if (header.endsWith(' missing')) continue
         const size = Number(header.split(' ')[2])
-        if (size <= MAX_BYTES) out.set(file, buf.toString('utf8', at, at + size))
+        if (size <= MAX_BYTES) out.set(oid, buf.toString('utf8', at, at + size))
         at += size + 1
       }
       resolve(out)
     })
-    proc.stdin.end(files.map((f) => `${rev}:${f}\n`).join(''))
+    proc.stdin.end(oids.map((o) => `${o}\n`).join(''))
   })
 }
 
 /** Package manifests resolve workspace imports; read them alongside the sources. */
 const wanted = isGraphFile
 
-/** `mode`: against the branch's merge-base, or only what's uncommitted (against HEAD). */
-export async function readGraph(checkout: string, configuredBase?: unknown, mode: Mode = 'branch'): Promise<GraphResponse> {
+/** A text's scan, kept by its git object id: the same text is scanned once, wherever it is (the working tree, a commit) */
+interface Kept {
+  scan: FileScan
+  /** A package.json's (its dependencies are read from it); null for a source file */
+  text: string | null
+  /** What it imports of each specifier, once the package sizes asked */
+  uses?: Map<string, Uses>
+}
+/**
+ * What's kept between reads, so a re-read (every save, the other mode) scans only what changed.
+ * Sources and package.jsons apart: a source's scan has imports, a package.json's doesn't, should two share a blob.
+ */
+const keptSources = new Map<string, Kept>()
+const keptManifests = new Map<string, Kept>()
+const keptOf = (file: string) => (isSource(file) ? keptSources : keptManifests)
+/** A working-tree file's object id, while its stat is the same */
+const keptFiles = new Map<string, { stamp: string; oid: string }>()
+/** A commit's whole side */
+const keptSides = new Map<string, Promise<Side>>()
+/** Commits whose side is kept: the two modes' bases, and the ones before a commit or a rebase */
+const MAX_SIDES = 4
+const MAX_BLOBS = 200_000
+/** Working-tree files read at a time */
+const READS = 64
+/**
+ * A file changed this recently may change again within its timestamp's resolution (a second, on some
+ * filesystems) at the same size: its stat says nothing, so it isn't kept (git's "racy" files).
+ */
+const RACY_MS = 2000
+
+function keep(oid: string, file: string, text: string): Kept {
+  const kept = keptOf(file)
+  let k = kept.get(oid)
+  if (!k) kept.set(oid, (k = { scan: scanFile(file, text), text: isSource(file) ? null : text }))
+  return k
+}
+
+const NOFOLLOW = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
+
+/**
+ * A regular file's contents, or empty: as readRegular, but checked on the file as opened, so one
+ * swapped since its lstat (for a link, a FIFO, a bigger file) isn't followed, waited on or read whole.
+ */
+async function readSafely(file: string): Promise<Buffer> {
+  const none = Buffer.alloc(0)
+  const handle = await fs.promises.open(file, NOFOLLOW).catch(() => null)
+  if (!handle) return none
+  try {
+    const st = await handle.stat()
+    return st.isFile() && st.size <= MAX_BYTES ? await handle.readFile() : none
+  } catch {
+    return none
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * The working tree's side: the listed files that are there. Only those whose stat changed are
+ * read, and of those only a text not seen before is scanned (`hash`: the repo's, for git's ids).
+ */
+async function headSnapshot(dir: string, listed: string[], hash: string) {
+  const files: string[] = []
+  const kept = new Map<string, Kept>()
+  const fresh: { file: string; stamp: string | null; regular: boolean }[] = []
+  const racy = Date.now() - RACY_MS
+  for (const file of listed) {
+    const full = path.join(dir, file)
+    let st: fs.Stats
+    try {
+      st = fs.lstatSync(full)
+    } catch {
+      continue // tracked, but gone from disk
+    }
+    // A link counts if it leads somewhere (it's never read: see readSafely).
+    if (st.isSymbolicLink() && !fs.existsSync(full)) continue
+    files.push(file)
+    const stamp = `${st.mtimeMs} ${st.ctimeMs} ${st.size} ${st.ino}`
+    const known = keptFiles.get(full)
+    const k = known?.stamp === stamp ? keptOf(file).get(known.oid) : undefined
+    if (k) kept.set(file, k)
+    else fresh.push({ file, stamp: Math.max(st.mtimeMs, st.ctimeMs) < racy ? stamp : null, regular: st.isFile() && st.size <= MAX_BYTES })
+  }
+  if (files.filter(isSource).length > MAX_FILES) fail(413, `more than ${MAX_FILES} source files`)
+
+  /** This read's texts, for their package imports; let go once the package sizes are read */
+  const texts = new Map<string, string>()
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(READS, fresh.length) }, async () => {
+      while (next < fresh.length) {
+        const { file, stamp, regular } = fresh[next++]
+        const full = path.join(dir, file)
+        // Anything that isn't a regular file (or is gone meanwhile) reads as empty.
+        const buf = regular ? await readSafely(full) : Buffer.alloc(0)
+        const oid = createHash(hash).update(`blob ${buf.length}\0`).update(buf).digest('hex')
+        const text = buf.toString('utf8')
+        texts.set(file, text)
+        kept.set(file, keep(oid, file, text))
+        if (stamp) keptFiles.set(full, { stamp, oid })
+        else keptFiles.delete(full)
+      }
+    }),
+  )
+  const onDisk = (f: string) => readRegular(path.join(dir, f), MAX_BYTES)?.toString('utf8') ?? ''
+  return {
+    files,
+    read: (f: string) => kept.get(f)?.text ?? '',
+    // Not among the listed (it appeared since): as it is now.
+    scan: (f: string) => kept.get(f)?.scan ?? scanFile(f, onDisk(f)),
+    /** What a file imports of each specifier */
+    uses: (f: string) => {
+      const k = kept.get(f)
+      const text = texts.get(f)
+      // Read in an earlier read (whose sizes weren't): as it is now, not kept (it may have changed since).
+      if (!k || text === undefined) return k?.uses ?? importsIn(onDisk(f))
+      return (k.uses ??= importsIn(text))
+    },
+    /** The texts aren't needed past the package sizes */
+    done: () => texts.clear(),
+  }
+}
+type Head = Awaited<ReturnType<typeof headSnapshot>>
+
+/**
+ * A commit's side: its tree listed, the blobs not seen before read (one cat-file), the rest from
+ * their kept scans. After `head`: most of a commit's texts are the working tree's, kept by then.
+ */
+function baseSide(dir: string, sha: string, head: Promise<unknown>): Promise<Side> {
+  const key = `${dir}\n${sha}`
+  let side = keptSides.get(key)
+  // Asked again: it's the newest (the oldest goes first).
+  if (side) keptSides.delete(key)
+  else {
+    side = (async () => {
+      const [listing] = await Promise.all([git(dir, ['ls-tree', '-r', '-z', '--full-tree', sha]), head])
+      // `<mode> <type> <oid>\t<path>`
+      const tree: [file: string, oid: string][] = []
+      for (const r of records(listing)) {
+        const tab = r.indexOf('\t')
+        const file = r.slice(tab + 1)
+        if (wanted(file)) tree.push([file, r.slice(0, tab).split(' ')[2]])
+      }
+      // Held here: what's kept may be dropped (another read, past MAX_BLOBS) while cat-file runs.
+      const kept = new Map<string, Kept>()
+      for (const [file, oid] of tree) {
+        const k = keptOf(file).get(oid)
+        if (k) kept.set(file, k)
+      }
+      const texts = await readBlobs(dir, [...new Set(tree.filter(([file]) => !kept.has(file)).map(([, oid]) => oid))])
+      for (const [file, oid] of tree) {
+        if (kept.has(file)) continue
+        const text = texts.get(oid)
+        // Missing (a partial clone) or too big: read as empty, but not kept under its id (its text isn't empty).
+        kept.set(file, text === undefined ? { scan: scanFile(file, ''), text: isSource(file) ? null : '' } : keep(oid, file, text))
+      }
+      return sideOf({ files: tree.map(([file]) => file), read: (f) => kept.get(f)?.text ?? '', scan: (f) => kept.get(f)!.scan })
+    })()
+    // A failed read isn't kept.
+    side.catch(() => keptSides.get(key) === side && keptSides.delete(key))
+  }
+  keptSides.set(key, side)
+  if (keptSides.size > MAX_SIDES) keptSides.delete(keptSides.keys().next().value!)
+  return side
+}
+
+/**
+ * `mode`: against the branch's merge-base, or only what's uncommitted (against HEAD).
+ * `sizes` reads the imported packages' sizes, apart: bundling them takes seconds, and the graph doesn't wait.
+ */
+export async function readGraph(checkout: string, configuredBase?: unknown, mode: Mode = 'branch'): Promise<{ graph: GraphResponse; sizes: () => Promise<PackageSizes> }> {
   // Paths below are relative to the repo root, whichever folder the project is.
   const dir = (await git(checkout, ['rev-parse', '--show-toplevel']).catch(() => fail(404, 'not a git repository'))).trim()
-  const [against, branch] = await Promise.all([
+  // Snapshots hold their blobs: dropping the kept ones only costs the next read.
+  if (keptSources.size + keptManifests.size > MAX_BLOBS) keptSources.clear(), keptManifests.clear(), keptFiles.clear()
+  // All at once, each waiting only for what it needs: git lists and diffs while the working tree is read.
+  const list = (...which: string[]) => git(dir, ['ls-files', '-z', ...which, '--exclude-standard']).then(records)
+  const refs = Promise.all([
     mode === 'branch'
       ? branchBase(dir, configuredBase)
       : git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD']).then((s) => ({ ref: 'HEAD', sha: s.trim() }), () => null),
     git(dir, ['symbolic-ref', '--short', '-q', 'HEAD']).then((s) => s.trim() || null, () => null),
   ])
-  const sha = against?.sha ?? null
-
   // Head: tracked + untracked (not ignored) files as they are on disk.
-  const headFiles = records(await git(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).filter(
-    (f) => wanted(f) && fs.existsSync(path.join(dir, f)),
-  )
-  if (headFiles.filter(isSource).length > MAX_FILES) fail(413, `more than ${MAX_FILES} source files`)
-  const head: Snapshot = {
-    files: headFiles,
-    read: (f) => readRegular(path.join(dir, f), MAX_BYTES)?.toString('utf8') ?? '',
-  }
+  const objectFormat = git(dir, ['rev-parse', '--show-object-format']).then((s) => (s.trim() === 'sha256' ? 'sha256' : 'sha1'), () => 'sha1')
+  const reading = Promise.all([list('--cached', '--others'), objectFormat]).then(([listed, hash]) => headSnapshot(dir, listed.filter(wanted), hash))
+  /** The base's side and the diff against it; null without a base */
+  const comparing = refs.then(([base]) => (base ? Promise.all([baseSide(dir, base.sha, reading), git(dir, ['diff', '--numstat', '-z', '-M', base.sha])]) : null))
+  const [[base, branch], head, old, untracked, status] = await Promise.all([refs, reading, comparing, list('--others'), git(dir, ['status', '--porcelain', '-z', '--no-renames']).then(records)])
+  const sha = base?.sha ?? null
 
-  let base: Snapshot | null = null
   let numstat: Numstat = {}
   let dirty = 0
-  if (sha) {
-    const baseFiles = records(await git(dir, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', sha])).filter(wanted)
-    const blobs = await readBlobs(dir, sha, baseFiles)
-    base = { files: baseFiles, read: (f) => blobs.get(f) ?? '' }
-    const [diff, untracked, status] = await Promise.all([
-      git(dir, ['diff', '--numstat', '-z', '-M', sha]),
-      git(dir, ['ls-files', '-z', '--others', '--exclude-standard']),
-      git(dir, ['status', '--porcelain', '-z', '--no-renames']),
-    ])
-    numstat = parseNumstat(diff)
-    // Ntracked files aren't in git diff: count them as all added.
-    for (const f of records(untracked).filter(isGraphFile)) {
-      numstat[f] = { added: addedLines(head.read(f)), deleted: 0 }
-    }
-    dirty = records(status).filter((l) => isGraphFile(l.slice(3))).length
+  if (old) {
+    numstat = parseNumstat(old[1])
+    // Untracked files aren't in git diff: count them as all added.
+    for (const f of untracked.filter(isGraphFile)) numstat[f] = { added: head.scan(f).length, deleted: 0 }
+    dirty = status.filter((l) => isGraphFile(l.slice(3))).length
   }
-  const graph = diffGraph(base, head, numstat)
-  const packageBundle = await bundleSizes(dir, head, graph.packages ?? [])
-  return { ...graph, packageBytes: packageBytes(dir, headFiles, graph.packages ?? []), packageBundle, baseRef: against?.ref ?? null, baseSha: sha, branch, dirty }
+  const graph = diffGraph(old?.[0] ?? null, sideOf(head), numstat)
+  let sizes: Promise<PackageSizes> | undefined
+  return {
+    graph: { ...graph, baseRef: base?.ref ?? null, baseSha: sha, branch, dirty },
+    sizes: () => (sizes ??= packageSizes(dir, head, graph.packages ?? []).finally(head.done)),
+  }
+}
+
+/** Each imported package's size, in a bundle and installed (see Graph.packageBundle, packageBytes) */
+export type PackageSizes = Required<Pick<Graph, 'packageBundle' | 'packageBytes'>>
+
+async function packageSizes(dir: string, head: Head, edges: PackageEdge[]): Promise<PackageSizes> {
+  const packageBundle = await bundleSizes(dir, head, edges)
+  return { packageBundle, packageBytes: packageBytes(dir, head.files, edges) }
 }
 
 /** What a file imports of each module specifier: names, the default, all of it (namespace, dynamic, require), or just its side effects */
@@ -142,24 +317,27 @@ function importsIn(src: string): Map<string, Uses> {
   return out
 }
 
-const bundleCache = new Map<string, { bytes: number; gzip: number } | null>()
+/** Each bundle measured once, also when asked again mid-way (a save during the first read) */
+const bundleCache = new Map<string, Promise<{ bytes: number; gzip: number } | null>>()
+const gzipped = promisify(gzip)
 
 /**
  * Per package, an entry exporting just what the code imports of it, bundled with
  * esbuild (minified, tree-shaken, its own dependencies in) from where its first importer is:
  * what those imports add to a bundle. For the browser, else (a node-only package) for node.
  */
-async function bundleSizes(dir: string, head: Snapshot, edges: { source: string; target: string; status: string }[]) {
+async function bundleSizes(dir: string, head: Head, edges: PackageEdge[]) {
+  // esbuild gets a third of the cores (said before its service starts): a graph read meanwhile (a save, the other mode) stays quick.
+  process.env.GOMAXPROCS ??= String(Math.max(1, Math.floor(os.availableParallelism() / 3)))
   const esbuild = await import('esbuild').catch(() => null)
   if (!esbuild) return {}
-  const { gzipSync } = await import('node:zlib')
   const per = new Map<string, { from: Set<string>; specs: Map<string, Uses> }>()
   for (const e of edges) {
     if (e.status === 'removed' || e.target === 'node') continue
     const p = per.get(e.target) ?? { from: new Set<string>(), specs: new Map() }
     per.set(e.target, p)
     p.from.add(path.dirname(e.source))
-    for (const [spec, u] of importsIn(head.read(e.source))) {
+    for (const [spec, u] of head.uses(e.source)) {
       const name = spec.replace(/^~/, '').match(/^((?:@[^/]+\/)?[^/]+)/)?.[1]
       if (name !== e.target) continue
       const all = p.specs.get(spec) ?? { names: new Set(), default: false, all: false }
@@ -188,37 +366,43 @@ async function bundleSizes(dir: string, head: Snapshot, edges: { source: string;
       })
       if (!resolveDir) return
       const key = `${resolveDir}\n${contents}`
-      if (!bundleCache.has(key)) {
-        let size: { bytes: number; gzip: number } | null = null
-        for (const platform of ['browser', 'node'] as const) {
-          // Optional dependencies that aren't installed stay out (as they would at runtime).
-          const external: string[] = []
-          for (let attempt = 0; attempt < 3 && !size; attempt++) {
-            try {
-              const r = await esbuild.build({
-                stdin: { contents, resolveDir, loader: 'ts' },
-                bundle: true, minify: true, treeShaking: true, write: false, format: 'esm', platform, logLevel: 'silent', external,
-                define: { 'process.env.NODE_ENV': '"production"' },
-                loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty', '.woff': 'empty', '.woff2': 'empty', '.node': 'empty' },
-              })
-              const code = r.outputFiles[0].contents
-              size = { bytes: code.length, gzip: gzipSync(code).length }
-            } catch (e) {
-              const missing = ((e as { errors?: { text: string }[] }).errors ?? []).map((x) => x.text.match(/^Could not resolve "([^"]+)"/)?.[1])
-              if (platform === 'browser' || missing.some((m) => !m)) break
-              external.push(...(missing as string[]))
+      let measured = bundleCache.get(key)
+      if (!measured) {
+        measured = (async () => {
+          for (const platform of ['browser', 'node'] as const) {
+            // Optional dependencies that aren't installed stay out (as they would at runtime).
+            const external: string[] = []
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const r = await esbuild.build({
+                  stdin: { contents, resolveDir, loader: 'ts' },
+                  bundle: true, minify: true, treeShaking: true, write: false, format: 'esm', platform, logLevel: 'silent', external,
+                  define: { 'process.env.NODE_ENV': '"production"' },
+                  loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty', '.woff': 'empty', '.woff2': 'empty', '.node': 'empty' },
+                })
+                const code = r.outputFiles[0].contents
+                // Off this thread: megabytes of bundle, per package.
+                return { bytes: code.length, gzip: (await gzipped(code)).length }
+              } catch (e) {
+                const missing = ((e as { errors?: { text: string }[] }).errors ?? []).map((x) => x.text.match(/^Could not resolve "([^"]+)"/)?.[1])
+                if (platform === 'browser' || missing.some((m) => !m)) break
+                external.push(...(missing as string[]))
+              }
             }
           }
-          if (size) break
-        }
-        bundleCache.set(key, size)
+          return null
+        })()
+        bundleCache.set(key, measured)
       }
-      const size = bundleCache.get(key)
+      const size = await measured
       if (size) out[name] = size
     }),
   )
   return out
 }
+
+/** An installed folder's size, kept while its package.json is the same one (a reinstall writes it anew) */
+const installed = new Map<string, { stamp: number; bytes: number }>()
 
 /**
  * Each package's installed size: its folder under the nearest node_modules
@@ -243,7 +427,14 @@ function packageBytes(dir: string, files: string[], edges: { target: string }[])
       }
     }
     try {
-      walk(fs.realpathSync(at))
+      const real = fs.realpathSync(at)
+      const stamp = fs.statSync(path.join(real, 'package.json'), { throwIfNoEntry: false })?.mtimeMs ?? 0
+      const was = installed.get(real)
+      if (was?.stamp === stamp) total = was.bytes
+      else {
+        walk(real)
+        installed.set(real, { stamp, bytes: total })
+      }
       out[name] = total
     } catch {}
   }
