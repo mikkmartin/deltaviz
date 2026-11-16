@@ -80,7 +80,7 @@ interface Kept {
   scan: FileScan
   /** A package.json's (its dependencies are read from it); null for a source file */
   text: string | null
-  /** PROTOTYPE: what it imports of each specifier, once the package sizes asked */
+  /** What it imports of each specifier, once the package sizes asked */
   uses?: Map<string, Uses>
 }
 /**
@@ -160,7 +160,7 @@ async function headSnapshot(dir: string, listed: string[], hash: string) {
   }
   if (files.filter(isSource).length > MAX_FILES) fail(413, `more than ${MAX_FILES} source files`)
 
-  /** PROTOTYPE: this read's texts, for their package imports; let go once the package sizes are read */
+  /** This read's texts, for their package imports; let go once the package sizes are read */
   const texts = new Map<string, string>()
   let next = 0
   await Promise.all(
@@ -185,7 +185,7 @@ async function headSnapshot(dir: string, listed: string[], hash: string) {
     read: (f: string) => kept.get(f)?.text ?? '',
     // Not among the listed (it appeared since): as it is now.
     scan: (f: string) => kept.get(f)?.scan ?? scanFile(f, onDisk(f)),
-    /** PROTOTYPE: what a file imports of each specifier */
+    /** What a file imports of each specifier */
     uses: (f: string) => {
       const k = kept.get(f)
       const text = texts.get(f)
@@ -193,7 +193,7 @@ async function headSnapshot(dir: string, listed: string[], hash: string) {
       if (!k || text === undefined) return k?.uses ?? importsIn(onDisk(f))
       return (k.uses ??= importsIn(text))
     },
-    /** PROTOTYPE: the texts aren't needed past the package sizes */
+    /** The texts aren't needed past the package sizes */
     done: () => texts.clear(),
   }
 }
@@ -243,7 +243,7 @@ function baseSide(dir: string, sha: string, head: Promise<unknown>): Promise<Sid
 
 /**
  * `mode`: against the branch's merge-base, or only what's uncommitted (against HEAD).
- * PROTOTYPE: `sizes` reads the imported packages' sizes, apart: bundling them takes seconds, and the graph doesn't wait.
+ * `sizes` reads the imported packages' sizes, apart: bundling them takes seconds, and the graph doesn't wait.
  */
 export async function readGraph(checkout: string, configuredBase?: unknown, mode: Mode = 'branch'): Promise<{ graph: GraphResponse; sizes: () => Promise<PackageSizes> }> {
   // Paths below are relative to the repo root, whichever folder the project is.
@@ -282,7 +282,7 @@ export async function readGraph(checkout: string, configuredBase?: unknown, mode
   }
 }
 
-/** PROTOTYPE: each imported package's size, in a bundle and installed (see Graph.packageBundle, packageBytes) */
+/** Each imported package's size, in a bundle and installed (see Graph.packageBundle, packageBytes) */
 export type PackageSizes = Required<Pick<Graph, 'packageBundle' | 'packageBytes'>>
 
 async function packageSizes(dir: string, head: Head, edges: PackageEdge[]): Promise<PackageSizes> {
@@ -290,7 +290,7 @@ async function packageSizes(dir: string, head: Head, edges: PackageEdge[]): Prom
   return { packageBundle, packageBytes: packageBytes(dir, head.files, edges) }
 }
 
-/** PROTOTYPE: what a file imports of each module specifier: names, the default, all of it (namespace, dynamic, require), or just its side effects */
+/** What a file imports of each module specifier: names, the default, all of it (namespace, dynamic, require), or just its side effects */
 interface Uses {
   names: Set<string>
   default: boolean
@@ -322,7 +322,7 @@ const bundleCache = new Map<string, Promise<{ bytes: number; gzip: number } | nu
 const gzipped = promisify(gzip)
 
 /**
- * PROTOTYPE: per package, an entry exporting just what the code imports of it, bundled with
+ * Per package, an entry exporting just what the code imports of it, bundled with
  * esbuild (minified, tree-shaken, its own dependencies in) from where its first importer is:
  * what those imports add to a bundle. For the browser, else (a node-only package) for node.
  */
@@ -405,7 +405,7 @@ async function bundleSizes(dir: string, head: Head, edges: PackageEdge[]) {
 const installed = new Map<string, { stamp: number; bytes: number }>()
 
 /**
- * PROTOTYPE: each package's installed size: its folder under the nearest node_modules
+ * Each package's installed size: its folder under the nearest node_modules
  * (the repo's, or a workspace package's), followed through pnpm's link but not into its own deps.
  */
 function packageBytes(dir: string, files: string[], edges: { target: string }[]): Record<string, number> {

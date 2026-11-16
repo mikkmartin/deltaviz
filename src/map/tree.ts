@@ -1,6 +1,6 @@
 /** Folder tree over the file graph: sizes and changes rolled up per folder. */
 import type { Graph, GraphNode } from './model.js'
-import { PKG_DIR, PKG_DIR_NAME } from './packages.prototype.js'
+import { PKG_DIR, PKG_DIR_NAME } from './packages.js'
 
 export interface TreeNode {
   /** Folder path or file path */
@@ -18,7 +18,7 @@ export interface TreeNode {
   /** Lines of code, now and at the base */
   lines: number
   baseLines: number
-  /** PROTOTYPE: size on disk, now and at the base */
+  /** Size on disk, now and at the base */
   bytes: number
   baseBytes: number
 }
@@ -90,7 +90,7 @@ export function buildTree(g: Graph): { root: TreeNode; byId: Map<string, TreeNod
   return { root, byId }
 }
 
-/** PROTOTYPE: a size on disk */
+/** A size on disk */
 export const fmtBytes = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} KB` : `${n} B`)
 
 export const fmt = (n: number) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))

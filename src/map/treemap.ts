@@ -5,7 +5,7 @@
  */
 import { hierarchy, treemap, treemapResquarify } from 'd3-hierarchy'
 import { hasHeader, HEADER, renamedAway, type R } from './cell.js'
-import { isPkgCell, pkgArea, splitTile } from './packages.prototype.js'
+import { isPkgCell, pkgArea, splitTile } from './packages.js'
 import type { TreeNode } from './tree.js'
 
 /** Corners of every cell */
@@ -54,7 +54,7 @@ export function createTreemap(): Treemap {
   }
 }
 
-/** Area a cell gets: lines (as at the base, for a deleted file); PROTOTYPE: a package, √ of its bundle bytes */
+/** Area a cell gets: lines (as at the base, for a deleted file); a package, √ of its bundle bytes */
 const value = (n: TreeNode) =>
   n.file ? (isPkgCell(n.id) ? pkgArea(n.bytes) : Math.max(1, n.file.status === 'removed' ? n.baseLines : n.lines)) : 0
 
@@ -65,7 +65,7 @@ function lay(top: TreeNode, W: number, H: number, memory: Arrangements): Layout 
   // Folders pad what they hold, under a row for the name; the zoomed-in one is the canvas, unpadded.
   const pad = (d: { depth: number }) => (d.depth > 0 ? PAD : 0)
   const laid = treemap<TreeNode>()
-    // PROTOTYPE: installed packages get their own column.
+    // Installed packages get their own column.
     .tile(splitTile((key, ...a) => stableSquarify(memory, key, ...a)))
     .size([W, H])
     .paddingTop((d) => (hasHeader(d as R) ? HEADER : pad(d)))

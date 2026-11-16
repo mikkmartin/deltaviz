@@ -1,7 +1,7 @@
 /**
- * PROTOTYPE (throwaway): the npm packages a codebase imports, in the Tree: a `package.json`
+ * The npm packages a codebase imports, in the Tree: a `package.json`
  * section on the right of the code, a folder per kind (dependencies, devDependencies, …), each
- * package sized by what the code's imports of it add to a bundle. Not for main.
+ * package sized by what the code's imports of it add to a bundle.
  */
 import type { HierarchyRectangularNode } from 'd3-hierarchy'
 import type { Graph, GraphNode, PackageEdge, PackageKind } from './model.js'
@@ -53,9 +53,9 @@ export const PKG_STROKE = 0.35
 export const PKG_DIR = ':packages'
 export const PKG_DIR_NAME = 'package.json'
 /**
- * A package's area: the square root of its bundle size, from 1 KB up (see
- * docs/research/treemap-scaling.md). Bundle sizes span 4+ orders of magnitude; linear, the small
- * ones vanish. Labels and tooltips keep the real bytes; a key in the section's title says so.
+ * A package's area: the square root of its bundle size, from 1 KB up. Bundle sizes span 4+
+ * orders of magnitude; linear, the small ones vanish. Labels and tooltips keep the real bytes;
+ * a key in the section's title says so.
  */
 export const pkgArea = (bytes: number) => Math.sqrt(Math.max(bytes, 1024))
 export const isPkgCell = (id: string) => id === PKG_DIR || id.startsWith(PKG_DIR + '/')
