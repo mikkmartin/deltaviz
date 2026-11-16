@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { DiffFile, State } from '../diff.js'
 import { DIFF_CSS, Delta, DiffCode, FileCode, wholeFile } from '../diff-code.js'
-import { COLOR } from './GraphSvg.js'
+import { COLOR } from './theme.js'
 import type { FileFate } from './Summary.js'
 import { Sheet } from '../sheet.js'
 

@@ -57,3 +57,6 @@ export const T: Theme = {
   removedOnAccent: red[500],
   shade: black,
 }
+
+/** The change colours by a file's status, for the Summary and the diff sheet */
+export const COLOR = { added: T.added, modified: T.modified, removed: T.removed, moved: T.moved, same: gray[600] }

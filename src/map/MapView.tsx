@@ -1,12 +1,11 @@
-import { hierarchy, treemap } from 'd3-hierarchy'
 import { alpha, black, mix, MONO, white } from '../palette.js'
-import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { DiffFile } from '../diff.js'
 import { useKept } from '../kept.js'
-import { baseName, edited, fateOf, folderOf, hasHeader, hasTitle, HEADER, renamedAway, renamedHere, type Area, type Fate, type R } from './cell.js'
+import { baseName, edited, fateOf, folderOf, hasHeader, hasTitle, HEADER, renamedHere, type Area, type Fate, type R } from './cell.js'
 import { centre, ImportLines, type Link } from './importLines.js'
 import { ChangeLine, FileLabel, FolderLabel, RenameLabel } from './labels.js'
-import { isPkgCell, PKG_DIR, PKG_DIR_NAME, pkgArea, pkgCellId, PKG_DARKEN, PKG_STROKE, splitTile, packageUses } from './packages.prototype.js'
+import { isPkgCell, PKG_DIR, PKG_DIR_NAME, pkgCellId, PKG_DARKEN, PKG_STROKE, packageUses } from './packages.prototype.js'
 import type { Graph } from './model.js'
 import type { Pointer } from './pointer.js'
 import { T } from './theme.js'
@@ -14,34 +13,37 @@ import { useSize } from './useSize.js'
 import { Switch } from '../switch.js'
 import { TABS_INSET } from '../tabs.js'
 import { buildTree, exposedFiles, fmt, fmtBytes, startNode, type TreeNode } from './tree.js'
+import { createTreemap, type Layout } from './treemap.js'
+import { advance, camera, css, full, lookAt, mapBox, opacity, place, rebase, retarget, still as rest, then, type Box, type Spring } from './zoom.js'
 
 /** Between the bar and the treemap (as .arch-map's gap) */
 const BAR_GAP = 10
-/** Corners of every cell */
-const RADIUS = 6
-/** Inside a folder, round what it holds (under its name row, when it has one) */
-const PAD = 2
-/** Between cells in a folder */
-const GAP = 3
 /** How far below its name row a hovered folder's accent fades out */
 const HEADER_FADE = 24
 /** A rectangle with only its top corners rounded */
 const topRounded = (x: number, y: number, w: number, h: number, r: number) =>
   `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`
-/** A zoom's length, and its easing: slow at both ends, nearly all the travel in the middle */
-const ZOOM_MS = 520
-const ZOOM_EASE = 'cubic-bezier(.8,0,.2,1)'
-/** When, as shares of the zoom, the new view fades in: mid-flight, at its fastest, so the switch isn't seen */
-const FADE = [0.4, 0.6] as const
-type Box = Pick<R, 'x0' | 'y0' | 'x1' | 'y1'>
-/** The transform that fits a whole view (W×H) into the cell `c` */
-const into = (c: Box, W: number, H: number) =>
-  `matrix(${(c.x1 - c.x0) / W},0,0,${(c.y1 - c.y0) / H},${c.x0},${c.y0})`
-/** The transform that blows the cell `c` up to a whole view (W×H) */
-const outOf = (c: Box, W: number, H: number) => {
-  const sx = W / (c.x1 - c.x0)
-  const sy = H / (c.y1 - c.y0)
-  return `matrix(${sx},0,0,${sy},${-c.x0 * sx},${-c.y0 * sy})`
+/**
+ * A zoom in flight: the views drawn, each placed in the base view's space (`parent`: where it was
+ * zoomed into from; none for the base), and the one it's headed to (drawn live, the others as they were).
+ */
+type Placed = { key: number; layout: Layout; box: Box; parent: Box | null }
+type Flight = { views: Placed[]; target: number }
+/** Bottom to top: outer views under inner ones; at the same folder (packages toggled), the base under */
+const byDepth = (a: Placed, b: Placed) => a.layout.top.depth - b.layout.top.depth || Number(!!a.parent) - Number(!!b.parent) || a.key - b.key
+/** A cell's area */
+const area = (c: Box) => (c.x1 - c.x0) * (c.y1 - c.y0)
+/** A cell inside the view, not the zoomed-in folder (the canvas) */
+const inView = (c: R) => c.depth > 0
+/** The folder zoomed into, as the address has it (`?in=`; none: the repo itself) */
+const focusInUrl = () => new URLSearchParams(location.search).get('in')
+/** The address with `id` as the folder zoomed into */
+const urlWithFocus = (id: string) => {
+  const u = new URL(location.href)
+  if (id) u.searchParams.set('in', id)
+  else u.searchParams.delete('in')
+  // Slashes read better as they are (?in=src/map).
+  return u.href.replaceAll('%2F', '/')
 }
 /** The id of the cell an event happened in */
 const idAt = (target: EventTarget) => (target as Element).closest('[data-id]')?.getAttribute('data-id')
@@ -84,7 +86,17 @@ export function MapView(
   },
 ) {
   const { data, root, byId, width, height, mini, onHover: setHover } = props
-  const [focusId, setFocusId] = useKept(`${props.keepKey}:focus`, (props.startId && byId.has(props.startId) ? props.startId : null) ?? startNode(root).id, props.restore)
+  // A folder in the address (?in=src/map: zoomed into, from a link or Back/Forward) wins over the kept one.
+  // One that isn't in the Tree (a stale link, another mode) is ignored.
+  const [inUrl] = useState(() => {
+    const id = mini ? null : focusInUrl()
+    return id !== null && byId.has(id) ? id : null
+  })
+  const [focusId, setFocusId] = useKept(
+    `${props.keepKey}:focus`,
+    inUrl ?? (props.startId && byId.has(props.startId) ? props.startId : null) ?? startNode(root).id,
+    props.restore && inUrl === null,
+  )
   /** Whether hovering a folder draws its imports (a big one has thousands) */
   const [folderLinks, setFolderLinks] = useKept(`${props.keepKey}:folder-links`, false, props.restore)
   const exposed = useMemo(() => exposedFiles(data), [data])
@@ -96,47 +108,12 @@ export function MapView(
   const [barRef, bar] = useSize()
   // Less the bar and the gap under it (.arch-map's)
   const H = Math.max(mini ? 120 : 240, height - (bar.height || 30) - BAR_GAP)
-  // PROTOTYPE: the package.json section is sized by the square root of bundle bytes.
-  const view = useMemo(() => {
-    const top = byId.get(focusId) ?? root
-    const h = hierarchy(top, (n) => (n.file ? null : n.children.filter((c) => !renamedAway(c))))
-      .sum((n) =>
-        n.file ? (isPkgCell(n.id) ? pkgArea(n.bytes) : Math.max(1, n.file.status === 'removed' ? n.baseLines : n.lines)) : 0,
-      )
-      .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
-    // Folders pad what they hold, under a row for the name; the zoomed-in one is the canvas, unpadded.
-    const pad = (d: { depth: number }) => (d.depth > 0 ? PAD : 0)
-    const laid = treemap<TreeNode>()
-      // PROTOTYPE: the split variant puts installed packages in their own column.
-      .tile(splitTile)
-      .size([W, H])
-      .paddingTop((d) => (hasHeader(d as R) ? HEADER : pad(d)))
-      .paddingLeft(pad)
-      .paddingRight(pad)
-      .paddingBottom(pad)
-      // A gap between what a folder holds.
-      .paddingInner(GAP)(h)
-    const cells = new Map<string, R>()
-    const radius = new Map<string, number>()
-    laid.each((d) => {
-      cells.set(d.data.id, d as R)
-      // Two steps, so neighbours' corners match: small cells stay boxes, not pills.
-      const side = Math.min(d.x1 - d.x0, d.y1 - d.y0)
-      radius.set(d.data.id, d.depth === 0 ? 0 : side >= 4 * RADIUS ? RADIUS : Math.min(2, side / 4))
-    })
-    // How deep the folders go here: the deepest gets the darkest tone, however deep that is.
-    let deepest = 1
-    laid.each((d) => {
-      if (!d.data.file) deepest = Math.max(deepest, d.depth)
-    })
-    return { top, laid, cells, radius, deepest }
-  }, [focusId, root, byId, W, H])
+  // Kept across renders: each folder's arrangement survives zooms (see treemap.ts).
+  const [treemap] = useState(createTreemap)
+  const view = useMemo(() => treemap.layout(byId.get(focusId) ?? root, W, H), [treemap, focusId, root, byId, W, H])
 
   // A hovered file too small to draw (or outside the zoom) lights the cell it's drawn in.
-  let hover: string | null = null
-  for (let t = props.hover === null ? null : (byId.get(props.hover) ?? null); t && !hover; t = t.parent) {
-    if (view.cells.has(t.id)) hover = t.id
-  }
+  const hover = (props.hover === null ? undefined : view.cellOf(byId.get(props.hover)))?.data.id ?? null
   const hoverCell = hover === null || hover === view.top.id ? undefined : view.cells.get(hover)
   // A hovered file lights its folder too, as if that were hovered.
   const holder = hoverCell?.data.file && hoverCell.parent && hoverCell.parent.depth > 0 ? hoverCell.parent : undefined
@@ -149,12 +126,7 @@ export function MapView(
     // Targets merge into cells no deeper than the hovered one: a folder links to folders, a file to files.
     // PROTOTYPE: a package's lines run to the files importing it, however deep they are.
     const depth = isPkgCell(hover) && byId.get(hover)?.file ? Infinity : (view.cells.get(hover)?.depth ?? 1)
-    const visible = (id: string): R | undefined => {
-      for (let t: TreeNode | null = byId.get(id) ?? null; t; t = t.parent) {
-        const c = view.cells.get(t.id)
-        if (c && c.depth <= Math.max(1, depth) && (c.x1 - c.x0) * (c.y1 - c.y0) > 30) return c
-      }
-    }
+    const visible = (id: string) => view.cellOf(byId.get(id), (c) => c.depth <= Math.max(1, depth) && area(c) > 30)
     const agg = new Map<string, Link>()
     for (const e of data.edges) {
       const out = inside(e.source) && !inside(e.target)
@@ -174,12 +146,7 @@ export function MapView(
 
   // Moves, old spot → new, between the cells they're drawn in (a folder, when the file is too small).
   const moves = useMemo(() => {
-    const drawn = (id: string): R | undefined => {
-      for (let t: TreeNode | null = byId.get(id) ?? null; t; t = t.parent) {
-        const c = view.cells.get(t.id)
-        if (c && (c.x1 - c.x0) * (c.y1 - c.y0) > 30) return c
-      }
-    }
+    const drawn = (id: string) => view.cellOf(byId.get(id), (c) => area(c) > 30)
     const out = new Map<string, { from: R; to: R; ids: string[] }>()
     for (const n of data.nodes) {
       const from = n.from && folderOf(n.from) !== folderOf(n.id) && drawn(n.from)
@@ -191,62 +158,136 @@ export function MapView(
     return [...out.values()]
   }, [data, view, byId])
 
-  // Zooming: the view left behind stays drawn while the new one grows out of the cell clicked
-  // (in), or shrinks back into the one it was (out); both fade.
-  const [leaving, setLeaving] = useState<Layout | null>(null)
-  const current = useRef<SVGGElement>(null)
-  const old = useRef<SVGGElement>(null)
+  // Zooming: a camera on a spring over the views in flight (see zoom.ts). A new zoom mid-flight
+  // retargets it, carrying on at the speed it has; the new view fades in as the camera nears it.
   const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches
-  /** PROTOTYPE: toggling packages zooms too: the code, alone, to (or from) where it sits beside them */
-  const [pkgZoom, setPkgZoom] = useState<{ code: Box; out: boolean } | null>(null)
-  const zoomTo = (id: string) => {
-    if (id === view.top.id) return
-    if (!still()) {
-      setPkgZoom(null)
-      setLeaving(view)
-    }
-    setFocusId(id)
+  const [flight, setFlightState] = useState<Flight | null>(null)
+  const flightRef = useRef<Flight | null>(null)
+  const spring = useRef<Spring | null>(null)
+  const keys = useRef(0)
+  const setFlight = (f: Flight | null) => {
+    flightRef.current = f
+    if (!f) spring.current = null
+    setFlightState(f)
   }
+  /** Fly to `next` (laid out already), from wherever the camera is */
+  const fly = (next: Layout) => {
+    const whole = full(W, H)
+    const was = flightRef.current
+    const s: Spring = spring.current ?? rest(whole)
+    // The view headed to is drawn live: as it is now.
+    const views: Placed[] = was
+      ? was.views.map((p) => (p.key === was.target ? { ...p, layout: view } : { ...p }))
+      : [{ key: keys.current++, layout: view, box: whole, parent: null }]
+    let to = views.find((p) => p.layout.top === next.top)
+    if (to) to.layout = next
+    else {
+      // Into a folder drawn in a view in flight (the innermost that has it) …
+      const holder = [...views].sort(byDepth).reverse().find((p) => p.layout.cells.has(next.top.id))
+      const cell = holder?.layout.cells.get(next.top.id)
+      if (holder && cell) {
+        if (cell.x1 - cell.x0 < 1 || cell.y1 - cell.y0 < 1) return setFlight(null)
+        to = { key: keys.current++, layout: next, box: mapBox(place(holder.box, W, H), cell), parent: holder.box }
+      } else {
+        // … or out to one holding the base view: everything moves into its space.
+        const base = views.find((p) => !p.parent)!
+        const at = next.cells.get(base.layout.top.id)
+        if (!at || at.x1 - at.x0 < 1 || at.y1 - at.y0 < 1) return setFlight(null)
+        const a = place(at, W, H)
+        for (const p of views) (p.box = mapBox(a, p.box)), (p.parent = p.parent ? mapBox(a, p.parent) : whole)
+        rebase(s, a)
+        to = { key: keys.current++, layout: next, box: whole, parent: null }
+      }
+      views.push(to)
+    }
+    retarget(s, to.box)
+    spring.current = s
+    // Views hidden where the camera is and where it's headed are dropped: rapid zooms don't pile up.
+    const here = camera(s)
+    const seen = (p: Placed) => p === to || !p.parent || opacity(here, p.box, p.parent) > 0 || opacity(s.to, p.box, p.parent) > 0
+    setFlight({ views: views.filter(seen), target: to.key })
+  }
+  /** Zoom to `id`; `push`: a step in the browser's history, so Back zooms back out */
+  const zoomTo = (id: string, push = true) => {
+    const t = byId.get(id)
+    if (!t || id === view.top.id) return
+    setFocusId(id)
+    if (push && !mini) history.pushState(null, '', urlWithFocus(id))
+    if (still()) setFlight(null)
+    else fly(treemap.layout(t, W, H))
+  }
+  // The address shows where we're zoomed (replaced, not a step); Back/Forward zoom to what theirs shows.
+  // A folder no longer in the Tree: the address goes back to where we are.
+  const onPopRef = useRef(() => {})
+  onPopRef.current = () => {
+    const id = focusInUrl() ?? ''
+    if (byId.has(id)) zoomTo(id, false)
+    else history.replaceState(history.state, '', urlWithFocus(focusId))
+  }
+  useEffect(() => {
+    if (!mini && focusInUrl() !== focusId) history.replaceState(history.state, '', urlWithFocus(focusId))
+  }, [mini, focusId])
+  useEffect(() => {
+    if (mini) return
+    const onPop = () => onPopRef.current()
+    addEventListener('popstate', onPop)
+    return () => removeEventListener('popstate', onPop)
+  }, [mini])
+  // A new size: no flying (the views in flight were laid out at the old one). Before any new flight below.
+  useLayoutEffect(() => setFlight(null), [W, H])
+  // PROTOTYPE: toggling packages zooms too: the code, alone, to (or from) where it sits beside them.
   const shownView = useRef(view)
   const hadPkgs = useRef(props.showPackages)
   useLayoutEffect(() => {
     const [was, had] = [shownView.current, hadPkgs.current]
     shownView.current = view
     hadPkgs.current = props.showPackages
-    if (had === props.showPackages || was === view || still()) return
+    // Mid-zoom, the zoom carries on (drawing the view as it is now) rather than jumping.
+    if (had === props.showPackages || was === view || still() || flightRef.current) return
     // Where the code sits in the view with packages: left of them, at the top.
     const withPkgs = props.showPackages ? view : was
     const code = withPkgs.laid.children?.filter((c) => !isPkgCell(c.data.id))
     if (!code?.length || code.length === withPkgs.laid.children?.length) return
     const box = { x0: Math.min(...code.map((c) => c.x0)), y0: Math.min(...code.map((c) => c.y0)), x1: Math.max(...code.map((c) => c.x1)), y1: Math.max(...code.map((c) => c.y1)) }
-    setPkgZoom({ code: box, out: !!props.showPackages })
-    setLeaving(was)
+    const [outer, inner] = [{ key: keys.current++, layout: withPkgs, box: full(W, H), parent: null }, { key: keys.current++, layout: props.showPackages ? was : view, box, parent: full(W, H) }]
+    // Out to the packages: from the code's box to the whole; back: the reverse.
+    const [from, to] = props.showPackages ? [inner, outer] : [outer, inner]
+    spring.current = { from: from.box, to: to.box, t: 0, v: 0 }
+    setFlight({ views: [outer, inner], target: to.key })
   }, [view, props.showPackages])
-  /** Zooming out: the new view holds the old one */
-  let zoomingOut = false
-  for (let t: TreeNode | null = leaving?.top.parent ?? null; t && !zoomingOut; t = t.parent) zoomingOut = t === view.top
-  if (pkgZoom) zoomingOut = pkgZoom.out
+  const shown = flight
+  // Each frame: the spring on, each view placed where the camera sees it (no re-render), until it rests.
+  const ghosts = useRef(new Map<number, SVGGElement>())
+  const current = useRef<SVGGElement>(null)
   useLayoutEffect(() => {
-    if (!leaving || !current.current || !old.current) return
-    // The cell one view is in, in the other (or its nearest drawn ancestor).
-    const [outer, inner] = zoomingOut ? [view, leaving] : [leaving, view]
-    let cell: Box | undefined = pkgZoom?.code
-    for (let t: TreeNode | null = inner.top; t && !cell; t = t.parent) cell = outer.cells.get(t.id)
-    if (!cell || cell.x1 - cell.x0 < 1 || cell.y1 - cell.y0 < 1) return (setLeaving(null), setPkgZoom(null))
-    const [small, big] = [into(cell, W, H), outOf(cell, W, H)]
-    // Each view is opaque (its own canvas under it) and the new one is on top, fading in briefly
-    // mid-flight: never a gap, and never two views over each other for long.
-    const move = { duration: ZOOM_MS, easing: ZOOM_EASE, fill: 'both' } as const
-    const fade = (from: number, to: number) => ({ delay: ZOOM_MS * from, duration: ZOOM_MS * (to - from), easing: 'linear', fill: 'both' }) as const
-    const runs = [
-      current.current.animate([{ transform: zoomingOut ? big : small }, { transform: 'none' }], move),
-      old.current.animate([{ transform: 'none' }, { transform: zoomingOut ? small : big }], move),
-      current.current.animate([{ opacity: 0 }, { opacity: 1 }], fade(...FADE)),
-    ]
-    runs[0].finished.then(() => (setLeaving(null), setPkgZoom(null)), () => {})
-    return () => runs.forEach((r) => r.cancel())
-    // Once per zoom: the views it runs between are set when it starts.
-  }, [leaving])
+    const g = current.current
+    // Not flying, or a flight just dropped (a new size): the view where it rests.
+    if (!shown || shown !== flightRef.current || !spring.current) {
+      g?.removeAttribute('transform')
+      g?.style.removeProperty('opacity')
+      return
+    }
+    const paint = () => {
+      const s = spring.current!
+      const cam = lookAt(camera(s), W, H)
+      for (const p of shown.views) {
+        const el = p.key === shown.target ? g : ghosts.current.get(p.key)
+        if (!el) continue
+        el.setAttribute('transform', css(then(place(p.box, W, H), cam)))
+        el.style.opacity = String(opacity(camera(s), p.box, p.parent))
+      }
+    }
+    paint()
+    let last = performance.now()
+    let raf = requestAnimationFrame(function tick(now) {
+      const done = advance(spring.current!, (now - last) / 1000)
+      last = now
+      paint()
+      if (done) setFlight(null)
+      else raf = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [shown, W, H])
 
   // PROTOTYPE: who imports the hovered package (or folder of them), outlined.
   const uses = useMemo(() => (props.showPackages ? packageUses(data) : []), [data, props.showPackages])
@@ -257,13 +298,8 @@ export function MapView(
   const importers = useMemo(() => {
     const out = new Map<string, R>()
     for (const f of uses.filter((u) => hoveredPkgs.includes(u.name)).flatMap((u) => [...u.files])) {
-      for (let t: TreeNode | null = byId.get(f) ?? null; t; t = t.parent) {
-        const c = view.cells.get(t.id)
-        if (c && c.depth > 0) {
-          out.set(c.data.id, c)
-          break
-        }
-      }
+      const c = view.cellOf(byId.get(f), inView)
+      if (c) out.set(c.data.id, c)
     }
     return [...out.values()]
   }, [hoveredPkgs, uses, byId, view])
@@ -318,6 +354,15 @@ export function MapView(
     </>
   )
 
+  const flying = shown ? [...shown.views].sort(byDepth) : []
+  const at = flying.findIndex((p) => p.key === shown?.target)
+  const ghost = (p: Placed) => (
+    <g key={p.key} ref={(g) => void (g ? ghosts.current.set(p.key, g) : ghosts.current.delete(p.key))} pointerEvents="none">
+      <rect width={W} height={H} fill={T.canvas} />
+      <Cells view={p.layout} exposed={exposed} diffs={diffs} pkgJson={pkgJson} />
+    </g>
+  )
+
   const crumbs: TreeNode[] = []
   for (let t: TreeNode | null = view.top; t; t = t.parent) crumbs.unshift(t)
   return (
@@ -355,15 +400,13 @@ export function MapView(
           height={H}
           style={{ display: 'block', flex: 'none' }}
           // One set of handlers for all cells (each carries its id): cells don't re-render on hover.
-          // Mid-zoom, the new view isn't where it will be: no hovering or clicking it.
+          // Mid-zoom too: only the view headed to takes the pointer, where it's drawn.
           onMouseOver={(e) => {
-            if (leaving) return
             const id = idAt(e.target)
             if (id != null) setHover(id)
           }}
           onMouseLeave={() => setHover(null)}
           onClick={(e) => {
-            if (leaving) return
             const id = idAt(e.target)
             const c = id == null ? undefined : view.cells.get(id)
             if (!c) return
@@ -372,14 +415,10 @@ export function MapView(
             else if (c.depth > 0) zoomTo(c.data.id)
           }}
         >
-          {/* While zooming, the view left, under the new one. */}
-          {leaving && (
-            <g ref={old} pointerEvents="none">
-              <rect width={W} height={H} fill={T.canvas} />
-              <Cells view={leaving} exposed={exposed} diffs={diffs} pkgJson={pkgJson} />
-            </g>
-          )}
+          {/* While zooming, the other views in flight, under and over the one headed to (kept in its place: never redrawn). */}
+          {flying.slice(0, Math.max(0, at)).map(ghost)}
           <g ref={current}>{drawn}</g>
+          {flying.slice(at + 1).map(ghost)}
         </svg>
     </>
   )
@@ -423,8 +462,6 @@ const NAME: Partial<Record<Fate, string>> = { movedAway: T.moved, deleted: T.rem
 /** What a cell's area and size label stand for: code is sized by lines; PROTOTYPE: packages by bundle bytes */
 const areaOf = (id: string): Area => (isPkgCell(id) ? 'bytes' : 'lines')
 
-/** The laid-out treemap MapView draws */
-type Layout = { top: TreeNode; laid: R; cells: Map<string, R>; radius: Map<string, number>; deepest: number }
 
 /**
  * Every cell of the treemap, as it is with nothing hovered: drawn once per layout, data
@@ -603,14 +640,9 @@ const Flash = memo(function Flash({ view, byId, flash, pkgJson }: { view: Layout
       while (id !== null && !byId.has(id)) id = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : id ? '' : null
       at = id === null ? null : (byId.get(id) ?? null)
     }
-    for (let t = at; t; t = t.parent) {
-      const c = view.cells.get(t.id)
-      if (c && c.depth > 0) {
-        // Several files in one cell: a change's colour over the neutral.
-        if (!cells.has(c.data.id) || color !== T.ink) cells.set(c.data.id, { cell: c, color })
-        break
-      }
-    }
+    const c = view.cellOf(at, inView)
+    // Several files in one cell: a change's colour over the neutral.
+    if (c && (!cells.has(c.data.id) || color !== T.ink)) cells.set(c.data.id, { cell: c, color })
   }
   return (
     <g pointerEvents="none">

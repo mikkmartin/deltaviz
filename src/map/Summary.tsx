@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
 import { DELTA_CSS, Delta } from '../diff-code.js'
-import { COLOR } from './GraphSvg.js'
+import { COLOR } from './theme.js'
 import type { GraphNode, Status } from './model.js'
 import { lit, type Pointer } from './pointer.js'
 import type { GraphResponse } from './read.js'
