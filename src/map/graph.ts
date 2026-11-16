@@ -50,10 +50,10 @@ interface Pkg {
   /** Subpath ('.', './types') → candidate targets as written in package.json, in condition order */
   exports: Record<string, string[]>
   main?: string
-  /** PROTOTYPE: names it depends on, at runtime (dependencies, peer, optional) and for development */
+  /** Names it depends on, at runtime (dependencies, peer, optional) and for development */
   deps: Set<string>
   dev: Set<string>
-  /** PROTOTYPE: the same, with their versions, to see whether a branch changed them */
+  /** The same, with their versions, to see whether a branch changed them */
   declared: Record<'dep' | 'dev', string>
 }
 
@@ -159,7 +159,7 @@ interface FileStats {
   length: number
 }
 
-/** PROTOTYPE: the npm package a specifier the repo can't resolve names, if any */
+/** The npm package a specifier the repo can't resolve names, if any */
 function packageOf(from: string, spec: string, own: Set<string>): string | undefined {
   if (/^(?:\.|\/|[@~]\/)/.test(spec)) return undefined
   if (STYLE.test(from) && !spec.startsWith('~')) return undefined

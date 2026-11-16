@@ -1,6 +1,6 @@
 // Builds the CLI (src/cli.ts → dist/cli.js, node) and the page (src/app.tsx → dist/app.js, browser).
 // Everything is bundled in: the package has no runtime dependencies. esbuild stays
-// external: the package-size prototype (map/read.ts) uses it only if it's installed.
+// external: package bundle sizes (map/read.ts) uses it only if it's installed.
 //
 // `node build.ts --watch [cli args]`: rebuilds on every save and runs the CLI in dev
 // mode (DELTAVIZ_DEV=1), restarting it when it's rebuilt; open pages reload themselves

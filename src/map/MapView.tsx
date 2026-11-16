@@ -5,7 +5,7 @@ import { useKept } from '../kept.js'
 import { baseName, edited, fateOf, folderOf, hasHeader, hasTitle, HEADER, renamedHere, type Area, type Fate, type R } from './cell.js'
 import { centre, ImportLines, type Link } from './importLines.js'
 import { ChangeLine, FileLabel, FolderLabel, RenameLabel } from './labels.js'
-import { isPkgCell, PKG_DIR, PKG_DIR_NAME, pkgCellId, PKG_DARKEN, PKG_STROKE, packageUses } from './packages.prototype.js'
+import { isPkgCell, PKG_DIR, PKG_DIR_NAME, pkgCellId, PKG_DARKEN, PKG_STROKE, packageUses } from './packages.js'
 import type { Graph } from './model.js'
 import type { Pointer } from './pointer.js'
 import { T } from './theme.js'
@@ -77,10 +77,10 @@ export function MapView(
     restore: boolean
     /** The folder to open zoomed into (where the CLI was run), else the first one with more than one child */
     startId?: string
-    /** PROTOTYPE: whether the installed packages are drawn (the switch in the bar) */
+    /** Whether the installed packages are drawn (the switch in the bar) */
     showPackages?: boolean
     onShowPackages?: (on: boolean) => void
-    /** PROTOTYPE: whether devDependencies are among them */
+    /** Whether devDependencies are among them */
     showDev?: boolean
     onShowDev?: (on: boolean) => void
   },
@@ -101,7 +101,7 @@ export function MapView(
   const [folderLinks, setFolderLinks] = useKept(`${props.keepKey}:folder-links`, false, props.restore)
   const exposed = useMemo(() => exposedFiles(data), [data])
   const diffs = useMemo(() => new Map((props.changes ?? []).map((f) => [f.path, f])), [props.changes])
-  // PROTOTYPE: the root package.json, as a tree file, for the package.json section's header.
+  // The root package.json, as a tree file, for the package.json section's header.
   const pkgJson = useMemo(() => (data.pkgJson ? buildTree({ nodes: [data.pkgJson], edges: [] }).byId.get(data.pkgJson.id) : undefined), [data.pkgJson])
   // Short of the bar's right end by the tabs' inset: the selected tab's pill lines up with the treemap's edge (only the tabs' faint ground goes past).
   const W = Math.max(300, width - TABS_INSET)
@@ -124,7 +124,7 @@ export function MapView(
     if (!hover || (!folderLinks && !byId.get(hover)?.file)) return []
     const inside = (id: string) => id === hover || id.startsWith(hover + '/')
     // Targets merge into cells no deeper than the hovered one: a folder links to folders, a file to files.
-    // PROTOTYPE: a package's lines run to the files importing it, however deep they are.
+    // A package's lines run to the files importing it, however deep they are.
     const depth = isPkgCell(hover) && byId.get(hover)?.file ? Infinity : (view.cells.get(hover)?.depth ?? 1)
     const visible = (id: string) => view.cellOf(byId.get(id), (c) => c.depth <= Math.max(1, depth) && area(c) > 30)
     const agg = new Map<string, Link>()
@@ -235,7 +235,7 @@ export function MapView(
   }, [mini])
   // A new size: no flying (the views in flight were laid out at the old one). Before any new flight below.
   useLayoutEffect(() => setFlight(null), [W, H])
-  // PROTOTYPE: toggling packages zooms too: the code, alone, to (or from) where it sits beside them.
+  // Toggling packages zooms too: the code, alone, to (or from) where it sits beside them.
   const shownView = useRef(view)
   const hadPkgs = useRef(props.showPackages)
   useLayoutEffect(() => {
@@ -289,7 +289,7 @@ export function MapView(
     return () => cancelAnimationFrame(raf)
   }, [shown, W, H])
 
-  // PROTOTYPE: who imports the hovered package (or folder of them), outlined.
+  // Who imports the hovered package (or folder of them), outlined.
   const uses = useMemo(() => (props.showPackages ? packageUses(data) : []), [data, props.showPackages])
   const hoveredPkgs = useMemo(() => {
     if (hover === null || !isPkgCell(hover)) return []
@@ -324,7 +324,7 @@ export function MapView(
       {holder && <HoverLayer view={view} cell={holder} pkgJson={pkgJson} diffs={diffs} />}
       {hoverCell && <HoverLayer view={view} cell={hoverCell} pkgJson={pkgJson} diffs={diffs} />}
       <defs>
-        {/* PROTOTYPE: a package that adds nothing to a bundle (a node builtin, or not installed): hatched */}
+        {/* A package that adds nothing to a bundle (a node builtin, or not installed): hatched */}
         <pattern id="lm-pkg-free" width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
           <line x1={0} y1={0} x2={0} y2={6} stroke={alpha(T.ink, 0.18)} strokeWidth={1.5} />
         </pattern>
@@ -380,7 +380,7 @@ export function MapView(
         {!mini && <span className="lm-muted">
           {fmt(view.top.lines)} lines · {view.top.files} files{view.top.changed ? ` · ${view.top.changed} changed` : ''} · hover: <span style={{ color: T.importOut }}>imports</span> /{' '}
           <span style={{ color: T.importIn }}>imported by</span>
-          {/* PROTOTYPE: the package.json section's key: its areas aren't linear, its labels are real. */}
+          {/* The package.json section's key: its areas aren't linear, its labels are real. */}
           {props.showPackages && <span title="A package's area is the square root of its bundle size (from 1 KB); its label is the real size"> · packages ∝ √size</span>}
         </span>}
         <span className="arch-grow" />
@@ -410,7 +410,7 @@ export function MapView(
             const id = idAt(e.target)
             const c = id == null ? undefined : view.cells.get(id)
             if (!c) return
-            // PROTOTYPE: the package.json section (a package, or the section itself) opens package.json.
+            // The package.json section (a package, or the section itself) opens package.json.
             if (c.data.file || isPkgCell(c.data.id)) props.onOpen(c.data.id)
             else if (c.depth > 0) zoomTo(c.data.id)
           }}
@@ -459,7 +459,7 @@ function stroke(t: TreeNode, fate: Fate, exposed: Set<string>): string {
 /** A changed file's name: in its fate's colour, struck through when deleted */
 const NAME: Partial<Record<Fate, string>> = { movedAway: T.moved, deleted: T.removed, edited: T.modified, added: T.added }
 
-/** What a cell's area and size label stand for: code is sized by lines; PROTOTYPE: packages by bundle bytes */
+/** What a cell's area and size label stand for: code is sized by lines; packages by bundle bytes */
 const areaOf = (id: string): Area => (isPkgCell(id) ? 'bytes' : 'lines')
 
 
@@ -496,7 +496,7 @@ const Cells = memo(function Cells({ view, exposed, diffs, pkgJson }: { view: Lay
               height={Math.max(0, h - 2 * inset)}
               rx={Math.max(0, (view.radius.get(t.id) ?? 0) - inset)}
               // The zoomed-in folder is the canvas itself: no fill or outline.
-              // PROTOTYPE: the package.json section is darker; a package's change (new, dropped) keeps its colour.
+              // The package.json section is darker; a package's change (new, dropped) keeps its colour.
               fill={
                 d.depth === 0
                   ? 'transparent'
@@ -553,7 +553,7 @@ const Cells = memo(function Cells({ view, exposed, diffs, pkgJson }: { view: Lay
 })
 
 /**
- * PROTOTYPE: the package.json section's header when the root package.json changed: its name
+ * The package.json section's header when the root package.json changed: its name
  * in the edited colour, the file's `+a−d` at the right, and where it changed under them.
  */
 function PkgJsonHeader({ cell, file, diff }: { cell: R; file: TreeNode; diff?: DiffFile }) {
@@ -626,7 +626,7 @@ const FLASH_COLOR = { '+': T.added, '-': T.removed, '=': T.ink }
  * Touched files, flashed over the cells by what the save did, fading out: green when it added
  * lines, red when it removed them, gray when it neither (an edit in place). A file too small to
  * draw, or outside the zoom, flashes the cell it's drawn in; one gone (not in the tree) the
- * nearest folder that is. PROTOTYPE: with the package.json section drawn, the root package.json
+ * nearest folder that is. With the package.json section drawn, the root package.json
  * flashes the section.
  */
 const Flash = memo(function Flash({ view, byId, flash, pkgJson }: { view: Layout; byId: Map<string, TreeNode>; flash: { paths: string[]; kinds: Record<string, '+' | '-' | '='>; n: number }; pkgJson?: TreeNode }) {

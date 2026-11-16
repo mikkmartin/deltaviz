@@ -2,6 +2,8 @@
 
 A live treemap of a git repo: the whole codebase sized by lines, the branch's changes coloured in, imports on hover. It updates as you edit.
 
+![deltaviz: a repo as a treemap, the branch's changes in colour](https://raw.githubusercontent.com/mikkmartin/deltaviz/main/assets/screenshot.png)
+
 ```sh
 npx deltaviz          # in any folder of a git repo
 npm i -g deltaviz     # or install it, then: dv

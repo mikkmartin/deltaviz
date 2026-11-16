@@ -13,9 +13,9 @@ export interface GraphNode {
   lines?: number
   /** Same, at the base commit; absent for an added file */
   baseLines?: number
-  /** PROTOTYPE: a package's share in a bundle (see Graph.packageBundle) */
+  /** A package's share in a bundle (see Graph.packageBundle) */
   bundled?: { bytes: number; gzip: number; installed?: number }
-  /** PROTOTYPE: size on disk now (before, for a removed file), and at the base */
+  /** Size on disk now (before, for a removed file), and at the base */
   bytes?: number
   baseBytes?: number
   /** All lines now, blank ones too; changed files only */
@@ -32,7 +32,7 @@ export interface GraphEdge {
   status: Exclude<Status, 'modified'>
 }
 
-/** PROTOTYPE: a file's import of an npm package (or `node` for builtins), not a repo file */
+/** A file's import of an npm package (or `node` for builtins), not a repo file */
 export interface PackageEdge {
   source: string
   /** Package name: `react`, `@scope/name`, `node` */
@@ -46,14 +46,14 @@ export type PackageKind = 'dep' | 'dev' | 'undeclared' | 'builtin'
 export interface Graph {
   nodes: GraphNode[]
   edges: GraphEdge[]
-  /** PROTOTYPE: imports of packages outside the repo */
+  /** Imports of packages outside the repo */
   packages?: PackageEdge[]
-  /** PROTOTYPE: whether the branch changed a package.json's dependencies (peer, optional too) or devDependencies, versions included */
+  /** Whether the branch changed a package.json's dependencies (peer, optional too) or devDependencies, versions included */
   declaredChanged?: Record<'dep' | 'dev', boolean>
-  /** PROTOTYPE: each imported package's size on disk (its installed folder), where installed */
+  /** Each imported package's size on disk (its installed folder), where installed */
   packageBytes?: Record<string, number>
-  /** PROTOTYPE: what the code's imports of each package add to a bundle: just what it imports, tree-shaken and minified (its own deps included) */
+  /** What the code's imports of each package add to a bundle: just what it imports, tree-shaken and minified (its own deps included) */
   packageBundle?: Record<string, { bytes: number; gzip: number }>
-  /** PROTOTYPE: with the package.json section drawn, the root package.json: the section's header shows its changes (it isn't a cell of its own) */
+  /** With the package.json section drawn, the root package.json: the section's header shows its changes (it isn't a cell of its own) */
   pkgJson?: GraphNode
 }

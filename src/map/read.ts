@@ -16,7 +16,7 @@ export interface GraphResponse extends Graph {
   baseRef: string | null
   baseSha: string | null
   branch: string | null
-  /** Uncommitted files among the changes */
+  /** Ncommitted files among the changes */
   dirty: number
 }
 
@@ -104,7 +104,7 @@ export async function readGraph(checkout: string, configuredBase?: unknown, mode
       git(dir, ['status', '--porcelain', '-z', '--no-renames']),
     ])
     numstat = parseNumstat(diff)
-    // Untracked files aren't in git diff: count them as all added.
+    // Ntracked files aren't in git diff: count them as all added.
     for (const f of records(untracked).filter(isGraphFile)) {
       numstat[f] = { added: addedLines(head.read(f)), deleted: 0 }
     }
@@ -115,7 +115,7 @@ export async function readGraph(checkout: string, configuredBase?: unknown, mode
   return { ...graph, packageBytes: packageBytes(dir, headFiles, graph.packages ?? []), packageBundle, baseRef: against?.ref ?? null, baseSha: sha, branch, dirty }
 }
 
-/** PROTOTYPE: what a file imports of each module specifier: names, the default, all of it (namespace, dynamic, require), or just its side effects */
+/** What a file imports of each module specifier: names, the default, all of it (namespace, dynamic, require), or just its side effects */
 interface Uses {
   names: Set<string>
   default: boolean
@@ -145,7 +145,7 @@ function importsIn(src: string): Map<string, Uses> {
 const bundleCache = new Map<string, { bytes: number; gzip: number } | null>()
 
 /**
- * PROTOTYPE: per package, an entry exporting just what the code imports of it, bundled with
+ * Per package, an entry exporting just what the code imports of it, bundled with
  * esbuild (minified, tree-shaken, its own dependencies in) from where its first importer is:
  * what those imports add to a bundle. For the browser, else (a node-only package) for node.
  */
@@ -221,7 +221,7 @@ async function bundleSizes(dir: string, head: Snapshot, edges: { source: string;
 }
 
 /**
- * PROTOTYPE: each package's installed size: its folder under the nearest node_modules
+ * Each package's installed size: its folder under the nearest node_modules
  * (the repo's, or a workspace package's), followed through pnpm's link but not into its own deps.
  */
 function packageBytes(dir: string, files: string[], edges: { target: string }[]): Record<string, number> {
